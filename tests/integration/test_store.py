@@ -11,7 +11,7 @@ import json
 import sqlite3
 import stat
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from hermes_run_debugger.event_v1 import validate_trace_records
 from hermes_run_debugger.store import (
@@ -172,7 +172,7 @@ def test_delete_is_contained_to_owned_record_ids(tmp_path):
 
 
 def test_retention_prune_only_removes_old_owned_runs(tmp_path):
-    now = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 10, 14, 12, 0, tzinfo=UTC)
     with RunDebugStore(tmp_path) as store:
         store.import_trace(
             make_trace("r-old"),
@@ -228,7 +228,10 @@ def test_load_run_round_trips_events_and_provenance(tmp_path):
 
 def test_raw_digests_stay_private_and_exports_use_opaque_refs(tmp_path):
     with RunDebugStore(tmp_path) as store:
-        store.import_trace(make_trace("r-1"), source_summary={"path": "/home/kensei/secret-dir/a.jsonl", "sha256": "s1"})
+        store.import_trace(
+            make_trace("r-1"),
+            source_summary={"path": "/home/kensei/secret-dir/a.jsonl", "sha256": "s1"},
+        )
         export = store.export_run("r-1", tmp_path / "out.json", fmt="json")
         text = export.read_text(encoding="utf-8")
         assert "secret-dir" not in text

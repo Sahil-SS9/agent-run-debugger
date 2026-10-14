@@ -18,20 +18,22 @@ portion is visible without being ordered.
 from __future__ import annotations
 
 import heapq
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Iterable, Mapping, Sequence
+from itertools import pairwise
+from typing import Any
 
 from .event_v1 import Event, Gap, ValidationResult
 from .redact import safe_text
 
 __all__ = [
+    "AMBIGUITY_LIMIT",
+    "DEFAULT_STALL_THRESHOLD_S",
+    "Timeline",
     "TimelineContradiction",
     "TimelineEntry",
-    "Timeline",
     "build_timeline",
-    "DEFAULT_STALL_THRESHOLD_S",
-    "AMBIGUITY_LIMIT",
 ]
 
 #: Wall-clock delta above which a gap is *reported* (as a hypothesis unless clock
@@ -93,6 +95,9 @@ class Timeline:
     suspect_windows: list[dict[str, Any]] = field(default_factory=list)
     clock_notes: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    #: Attempt records (as dicts) so callers can reason about reported outcomes
+    #: without re-reading the store.
+    attempts: list[dict[str, Any]] = field(default_factory=list)
 
     def entry(self, event_id: str) -> TimelineEntry | None:
         for item in self.entries:
@@ -110,6 +115,7 @@ class Timeline:
             "suspect_windows": self.suspect_windows,
             "clock_notes": self.clock_notes,
             "notes": self.notes,
+            "attempts": self.attempts,
         }
 
     def text(self) -> str:
@@ -180,7 +186,7 @@ def _detect_cycle(nodes: Sequence[str], edges: Sequence[tuple[str, str]]) -> lis
     adjacency: dict[str, list[str]] = {}
     for parent, child in edges:
         adjacency.setdefault(parent, []).append(child)
-    colour: dict[str, int] = {node: 0 for node in nodes}
+    colour: dict[str, int] = dict.fromkeys(nodes, 0)
     for start in nodes:
         if colour.get(start, 0) != 0:
             continue
@@ -198,7 +204,7 @@ def _detect_cycle(nodes: Sequence[str], edges: Sequence[tuple[str, str]]) -> lis
                 state = colour.get(nxt, 0)
                 if state == 1:
                     position = path.index(nxt) if nxt in path else 0
-                    return path[position:] + [nxt]
+                    return [*path[position:], nxt]
                 if state == 0:
                     stack.append((nxt, 0))
             else:
@@ -243,6 +249,7 @@ def build_timeline(
 
     timeline = Timeline(run_id=result.trace.run_id if result.trace else "")
     timeline.gaps = list(result.gaps)
+    timeline.attempts = [attempt.as_dict() for attempt in result.attempts]
     timeline.notes.append(
         "an absent causal parent is shown as a gap; no edge is inferred for it"
     )
@@ -337,7 +344,7 @@ def _annotate_clocks(
         by_attempt.setdefault(entry.event.attempt_id, []).append(entry)
 
     for attempt_entries in by_attempt.values():
-        for previous, current in zip(attempt_entries, attempt_entries[1:]):
+        for previous, current in pairwise(attempt_entries):
             previous_time = _parse_wall(previous.event.wall_time)
             current_time = _parse_wall(current.event.wall_time)
             if previous_time is None or current_time is None:
@@ -345,7 +352,7 @@ def _annotate_clocks(
             delta = (current_time - previous_time).total_seconds()
             if delta < stall_threshold_s:
                 continue
-            has_monotonic = both_monotonic = (
+            has_monotonic = (
                 previous.event.monotonic_ms is not None and current.event.monotonic_ms is not None
             )
             quality = {previous.event.clock.quality, current.event.clock.quality}
@@ -375,7 +382,7 @@ def _annotate_clocks(
 
     clock_note_added = False
     for attempt_entries in by_attempt.values():
-        for previous, current in zip(attempt_entries, attempt_entries[1:]):
+        for previous, current in pairwise(attempt_entries):
             previous_time = _parse_wall(previous.event.wall_time)
             current_time = _parse_wall(current.event.wall_time)
             if previous_time is None or current_time is None:

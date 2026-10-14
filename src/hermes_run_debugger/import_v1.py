@@ -19,9 +19,10 @@ with the reason, not parsed as something it might be.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from .event_v1 import SCHEMA_ID, TraceValidationError, ValidationResult, validate_trace_records
 from .identity import content_ref

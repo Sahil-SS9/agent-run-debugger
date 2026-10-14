@@ -11,14 +11,15 @@ it is never accepted as an instruction.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any
 
 from .event_v1 import Event
 from .redact import safe_text
 from .timeline import Timeline
 
-__all__ = ["REPLAY_SCHEMA_ID", "ReplayStep", "ReplayLog", "replay_events", "replay_text"]
+__all__ = ["REPLAY_SCHEMA_ID", "ReplayLog", "ReplayStep", "replay_events", "replay_text"]
 
 REPLAY_SCHEMA_ID = "hermes-run-debugger/replay"
 

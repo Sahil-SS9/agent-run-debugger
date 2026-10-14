@@ -25,11 +25,12 @@ import json
 import secrets
 import sqlite3
 import uuid
-from contextlib import contextmanager
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterator, Mapping, Sequence
+from typing import Any
 
 from . import migrations as _migrations
 from .event_v1 import Attempt, Clock, Event, Usage
@@ -39,10 +40,10 @@ from .report import build_report, render, write_report
 
 __all__ = [
     "CURRENT_SCHEMA_VERSION",
-    "StoreError",
     "ImportOutcome",
-    "StoredRun",
     "RunDebugStore",
+    "StoreError",
+    "StoredRun",
     "migration_backup_path",
 ]
 
@@ -63,7 +64,7 @@ def migration_backup_path(data_dir: str | Path, version: int = CURRENT_SCHEMA_VE
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 @dataclass(frozen=True)
@@ -126,7 +127,7 @@ class RunDebugStore:
         self._conn: sqlite3.Connection | None = None
 
     # -- lifecycle ---------------------------------------------------------
-    def open(self) -> "RunDebugStore":
+    def open(self) -> RunDebugStore:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(
             self.db_path,
@@ -136,10 +137,8 @@ class RunDebugStore:
         )
         conn.row_factory = sqlite3.Row
         conn.execute(f"pragma busy_timeout={int(self.lock_timeout_s * 1000)}")
-        try:
+        with suppress(sqlite3.DatabaseError):  # a concurrent writer may hold the lock briefly
             conn.execute("pragma journal_mode=WAL")
-        except sqlite3.DatabaseError:  # a concurrent writer may hold the lock briefly
-            pass
         conn.execute("pragma foreign_keys=on")
         self._conn = conn
         self._apply_migrations()
@@ -150,7 +149,7 @@ class RunDebugStore:
             self._conn.close()
             self._conn = None
 
-    def __enter__(self) -> "RunDebugStore":
+    def __enter__(self) -> RunDebugStore:
         return self.open()
 
     def __exit__(self, *_exc: object) -> None:
@@ -455,11 +454,11 @@ class RunDebugStore:
         if table not in _COUNTABLE_TABLES:
             raise StoreError(f"unknown table {table!r}")
         if run_id is None:
-            row = self.conn.execute(f"select count(*) as c from {table}").fetchone()  # noqa: S608
+            row = self.conn.execute(f"select count(*) as c from {table}").fetchone()
         else:
             column = "run_id"
             row = self.conn.execute(
-                f"select count(*) as c from {table} where {column}=?", (run_id,)  # noqa: S608
+                f"select count(*) as c from {table} where {column}=?", (run_id,)
             ).fetchone()
         return int(row["c"])
 
@@ -476,7 +475,9 @@ class RunDebugStore:
         ]
         attempts = [
             json.loads(r["payload_json"])
-            for r in self.conn.execute("select payload_json from attempts where run_id=? order by attempt_id", (run_id,))
+            for r in self.conn.execute(
+                "select payload_json from attempts where run_id=? order by attempt_id", (run_id,)
+            )
         ]
         gaps = [
             dict(r) for r in self.conn.execute(
@@ -536,7 +537,7 @@ class RunDebugStore:
         deleted: dict[str, int] = {}
         with self._tx() as conn:
             for table in ("events", "attempts", "gaps", "diagnoses", "import_revisions", "import_journal"):
-                cursor = conn.execute(f"delete from {table} where run_id=?", (run_id,))  # noqa: S608
+                cursor = conn.execute(f"delete from {table} where run_id=?", (run_id,))
                 deleted[table] = int(cursor.rowcount or 0)
             cursor = conn.execute("delete from runs where run_id=?", (run_id,))
             deleted["runs"] = int(cursor.rowcount or 0)
@@ -545,7 +546,7 @@ class RunDebugStore:
     def prune(self, *, retention_days: int, now: datetime | None = None) -> list[str]:
         if retention_days < 0:
             raise StoreError("retention_days must be >= 0")
-        cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=retention_days)
+        cutoff = (now or datetime.now(UTC)) - timedelta(days=retention_days)
         cutoff_stamp = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
         rows = self.conn.execute(
             "select run_id from runs where imported_at < ? order by imported_at", (cutoff_stamp,)

@@ -22,27 +22,28 @@ launders bad evidence into good-looking output):
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any
 
 from .identity import is_valid_id
 
 __all__ = [
-    "SCHEMA_ID",
-    "SCHEMA_VERSION",
+    "DELIVERY",
     "EVENT_KINDS",
     "OUTCOMES",
     "PROVENANCE",
     "REPORTED_STATUS",
-    "DELIVERY",
-    "TraceValidationError",
-    "ValidationResult",
-    "TraceEnvelope",
+    "SCHEMA_ID",
+    "SCHEMA_VERSION",
     "Attempt",
-    "Event",
-    "Usage",
     "Clock",
+    "Event",
     "Gap",
+    "TraceEnvelope",
+    "TraceValidationError",
+    "Usage",
+    "ValidationResult",
     "validate_trace_records",
 ]
 
@@ -515,7 +516,7 @@ def _detect_cycle(edges: Sequence[tuple[str, str]]) -> list[str] | None:
                 nxt = neighbours[index]
                 state = colour.get(nxt, WHITE)
                 if state == GREY:
-                    return path[path.index(nxt):] + [nxt] if nxt in path else [nxt, nxt]
+                    return [*path[path.index(nxt):], nxt] if nxt in path else [nxt, nxt]
                 if state == WHITE:
                     stack.append((nxt, 0))
             else:

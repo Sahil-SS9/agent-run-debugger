@@ -188,7 +188,7 @@ def test_two_stages_are_both_recorded():
 
 
 def test_secrets_never_reach_the_store_or_the_export(tmp_path):
-    payload = json.dumps({name: value for name, value in SEEDED.items()})
+    payload = json.dumps(SEEDED)
     result = trace_with(payload.replace('"', ""))
     policy = minimal_policy()
 

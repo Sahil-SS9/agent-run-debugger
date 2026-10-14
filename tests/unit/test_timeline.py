@@ -38,7 +38,7 @@ def records(events, *, attempts=None, gaps_note=""):
     }
     if attempts:
         attempt.update(attempts)
-    return [header, attempt] + events
+    return [header, attempt, *events]
 
 
 def ev(event_id, seq, *, parents=(), kind="tool_call", wall=None, mono=None,

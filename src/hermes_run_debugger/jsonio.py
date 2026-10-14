@@ -23,22 +23,23 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any
 
 __all__ = [
+    "CHUNK_BYTES",
     "InputError",
     "InputLimitExceeded",
     "MalformedRecord",
-    "StreamLimits",
     "ScanState",
+    "StreamLimits",
+    "depth_of",
     "iter_jsonl_lines",
-    "scan_jsonl",
     "load_strict",
     "loads_strict",
-    "depth_of",
-    "CHUNK_BYTES",
+    "scan_jsonl",
 ]
 
 CHUNK_BYTES = 65536
@@ -201,7 +202,7 @@ def iter_jsonl_lines(path: str | Path, limits: StreamLimits) -> Iterator[tuple[i
         yield line_no, buffer, False
 
 
-def scan_jsonl(  # noqa: C901 - one linear pass, branches are the policy
+def scan_jsonl(
     path: str | Path,
     *,
     limits: StreamLimits,

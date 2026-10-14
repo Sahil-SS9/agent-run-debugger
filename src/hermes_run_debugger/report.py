@@ -17,21 +17,23 @@ from __future__ import annotations
 
 import html
 import json
-from datetime import datetime, timezone
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any
 
 from .redact import safe_text
 
 __all__ = [
+    "LIMITATIONS",
     "REPORT_SCHEMA_ID",
     "REPORT_VERSION",
-    "LIMITATIONS",
     "build_report",
     "render",
+    "render_html",
     "render_json",
     "render_markdown",
-    "render_html",
+    "summarise_cost",
     "write_report",
 ]
 
@@ -52,11 +54,70 @@ LIMITATIONS: tuple[str, ...] = (
 
 
 def _iso_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _default_ref(kind: str, raw_id: str) -> str:
     return f"{kind}/{raw_id}"
+
+
+def summarise_cost(events: Sequence[Any]) -> dict[str, Any]:
+    """Cost v1 summary: actual, estimated and unknown kept strictly separate.
+
+    Imported token counts are the source's own reported figures. They are never
+    turned into money without a named price source, and an unknown value is
+    ``None`` — never ``0``.
+    """
+    reported_costs: list[float] = []
+    estimated_costs: list[float] = []
+    price_source: str | None = None
+    unknown_cost = 0
+    unknown_tokens = 0
+    reported_input = 0
+    reported_output = 0
+
+    for event in events:
+        usage = getattr(event, "usage", None)
+        if usage is None:
+            continue
+        has_tokens = usage.input_tokens is not None or usage.output_tokens is not None
+        if usage.cost is None:
+            if has_tokens:
+                unknown_cost += 1
+            else:
+                unknown_tokens += 1
+        elif usage.cost_kind == "estimated":
+            estimated_costs.append(float(usage.cost))
+            if price_source is None and usage.price_source:
+                price_source = usage.price_source
+        else:
+            reported_costs.append(float(usage.cost))
+        reported_input += int(usage.input_tokens or 0)
+        reported_output += int(usage.output_tokens or 0)
+
+    if not (reported_costs or estimated_costs):
+        cost_kind = "unknown"
+    elif reported_costs and estimated_costs:
+        cost_kind = "actual"
+    elif estimated_costs:
+        cost_kind = "estimated"
+    else:
+        cost_kind = "actual"
+
+    return {
+        "reported_total": sum(reported_costs) if reported_costs else None,
+        "estimated_total": sum(estimated_costs) if estimated_costs else None,
+        "cost_kind": cost_kind,
+        "price_source": price_source,
+        "events_with_unknown_cost": unknown_cost,
+        "events_with_unknown_tokens": unknown_tokens,
+        "reported_input_tokens": reported_input if (reported_input or reported_output) else None,
+        "reported_output_tokens": reported_output if (reported_input or reported_output) else None,
+        "note": (
+            "reported usage only; unknown values stay null and reported tokens are never "
+            "converted into money without a named price source"
+        ),
+    }
 
 
 def build_report(
@@ -82,12 +143,8 @@ def build_report(
     provenance: dict[str, int] = {}
     failures = 0
     interruptions = 0
-    reported_costs: list[float] = []
-    estimated_costs: list[float] = []
     unknown_cost_events = 0
-    reported_input = 0
-    reported_output = 0
-    tokens_unknown = 0
+    unknown_token_events = 0
 
     timeline: list[dict[str, Any]] = []
     for event in events:
@@ -99,17 +156,6 @@ def build_report(
         elif status == "interrupted":
             interruptions += 1
         usage = getattr(event, "usage", None)
-        if usage is not None:
-            if usage.cost is None:
-                if usage.input_tokens is None and usage.output_tokens is None:
-                    tokens_unknown += 1
-                unknown_cost_events += 1
-            elif usage.cost_kind == "estimated":
-                estimated_costs.append(float(usage.cost))
-            else:
-                reported_costs.append(float(usage.cost))
-            reported_input += int(usage.input_tokens or 0)
-            reported_output += int(usage.output_tokens or 0)
         timeline.append({
             "ref": ref("event", getattr(event, "event_id", "")),
             "attempt_ref": ref("attempt", getattr(event, "attempt_id", "")),
@@ -123,32 +169,10 @@ def build_report(
             "usage": getattr(usage, "as_reported", lambda: {})() if usage is not None else {},
         })
 
-    cost = {
-        "reported_total": sum(reported_costs) if reported_costs else None,
-        "estimated_total": sum(estimated_costs) if estimated_costs else None,
-        "cost_kind": (
-            "unknown" if not (reported_costs or estimated_costs)
-            else "estimated" if not reported_costs
-            else "actual"
-        ),
-        "price_source": next(
-            (
-                getattr(event.usage, "price_source", None)
-                for event in events
-                if getattr(event, "usage", None) is not None
-                and event.usage.price_source
-            ),
-            None,
-        ),
-        "events_with_unknown_cost": unknown_cost_events,
-        "events_with_unknown_tokens": tokens_unknown,
-        "reported_input_tokens": reported_input if (reported_input or reported_output) else None,
-        "reported_output_tokens": reported_output if (reported_input or reported_output) else None,
-        "note": (
-            "reported usage only; unknown values stay null and reported tokens are never "
-            "converted into money without a named price source"
-        ),
-    }
+    cost = summarise_cost(events)
+    unknown_cost_events = cost["events_with_unknown_cost"]
+    unknown_token_events = cost["events_with_unknown_tokens"]
+    del unknown_cost_events, unknown_token_events
 
     return {
         "schema": REPORT_SCHEMA_ID,
@@ -277,8 +301,13 @@ def render_markdown(report: Mapping[str, Any]) -> str:
     lines.append("")
     diagnosis = report.get("diagnosis")
     if diagnosis:
+        hypotheses = diagnosis.get("hypotheses", [])
         lines.append(f"- observed stop points: {len(diagnosis.get('observed', []))}")
-        for hypothesis in diagnosis.get("hypotheses", []):
+        lines.append(
+            f"- hypotheses: {len(hypotheses)} (evidence-linked; a causal finding requires a "
+            "controlled intervention)"
+        )
+        for hypothesis in hypotheses:
             lines.append(
                 f"- HYPOTHESIS [{_md_cell(hypothesis.get('rule_id'))}] "
                 f"{_md_cell(hypothesis.get('statement'))} "

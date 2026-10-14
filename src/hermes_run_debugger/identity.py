@@ -20,17 +20,18 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 __all__ = [
     "ID_RE",
     "canonical_json",
-    "stable_id",
     "content_ref",
-    "redacted_content_ref",
-    "opaque_ref",
-    "sha256_hex",
     "is_valid_id",
+    "opaque_ref",
+    "redacted_content_ref",
+    "sha256_hex",
+    "stable_id",
 ]
 
 # Conservative identity shape: a bounded, printable, control-character-free

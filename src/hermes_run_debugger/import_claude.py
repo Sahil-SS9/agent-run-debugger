@@ -28,16 +28,17 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any
 
 from .event_v1 import EVENT_KINDS, Gap, validate_trace_records
 from .identity import content_ref, redacted_content_ref, sha256_hex, stable_id
 from .import_v1 import ImportRefused, TraceImport, guard_source
 from .jsonio import InputLimitExceeded, MalformedRecord, ScanState, StreamLimits, scan_jsonl
 
-__all__ = ["import_claude_trace", "MAX_RESULT_SUMMARY", "RETENTION_MODES"]
+__all__ = ["MAX_RESULT_SUMMARY", "RETENTION_MODES", "import_claude_trace"]
 
 #: Bound on retained tool-result summary text (redacted later, before persistence).
 MAX_RESULT_SUMMARY = 500
@@ -191,7 +192,7 @@ def import_claude_trace(
 
 def _build_trace(
     sources: Sequence[_Source], *, limits: StreamLimits, retention_mode: str, run_id: str | None
-) -> TraceImport:  # noqa: C901 - the branches are the adapter's documented rules
+) -> TraceImport:
     stats: dict[str, Any] = {
         "assistant_records": 0,
         "requests": 0,
@@ -285,9 +286,16 @@ def _build_trace(
         pending: dict[str, dict[str, Any]] = {}
         state_holder = {"last": None, "current": None}
 
-        def flush() -> None:
+        def flush(
+            request_id: str | None,
+            *,
+            pending: dict[str, dict[str, Any]],
+            uuid_to_event: dict[str, str],
+            tool_start: dict[str, str],
+            state_holder: dict[str, Any],
+            attempt_id: str,
+        ) -> None:
             """Emit the merged model_call + tool starts for the open request."""
-            request_id = state_holder["current"]
             if request_id is None:
                 return
             merged = pending.pop(request_id, None)
@@ -367,7 +375,10 @@ def _build_trace(
                 if state_holder["current"] is None:
                     state_holder["current"] = request_id
                 elif request_id != state_holder["current"]:
-                    flush()
+                    flush(
+                        state_holder["current"], pending=pending, uuid_to_event=uuid_to_event,
+                        tool_start=tool_start, state_holder=state_holder, attempt_id=attempt_id,
+                    )
                     state_holder["current"] = request_id
 
                 message = entry.get("message") if isinstance(entry.get("message"), Mapping) else {}
@@ -414,7 +425,10 @@ def _build_trace(
             if entry_type == "user":
                 # A user entry closes the open request so the timeline stays in
                 # source order: the tool result that follows belongs after it.
-                flush()
+                flush(
+                    state_holder["current"], pending=pending, uuid_to_event=uuid_to_event,
+                    tool_start=tool_start, state_holder=state_holder, attempt_id=attempt_id,
+                )
                 message = entry.get("message") if isinstance(entry.get("message"), Mapping) else {}
                 content = message.get("content")
                 if entry.get("isMeta") or entry.get("isCompactSummary") or entry.get("isSidechain"):
@@ -496,7 +510,10 @@ def _build_trace(
             if isinstance(entry_type, str) and entry_type not in unsupported_types:
                 unsupported_types.append(entry_type)
 
-        flush()
+        flush(
+            state_holder["current"], pending=pending, uuid_to_event=uuid_to_event,
+            tool_start=tool_start, state_holder=state_holder, attempt_id=attempt_id,
+        )
 
     if unmapped_usage_keys:
         notes.append(

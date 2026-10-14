@@ -10,11 +10,11 @@ migrated one.
 from __future__ import annotations
 
 import shutil
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
-__all__ = ["CURRENT_SCHEMA_VERSION", "Migration", "MIGRATIONS", "backup_path"]
+__all__ = ["CURRENT_SCHEMA_VERSION", "MIGRATIONS", "Migration", "backup_path"]
 
 CURRENT_SCHEMA_VERSION = 1
 

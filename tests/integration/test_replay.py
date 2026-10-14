@@ -9,8 +9,8 @@ across runs, and the store is untouched.
 from __future__ import annotations
 
 import json
-import sqlite3
 import socket
+import sqlite3
 import subprocess
 import urllib.request
 

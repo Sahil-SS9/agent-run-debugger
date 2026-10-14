@@ -15,22 +15,23 @@ high-risk patterns and raises :class:`ScrubFailure` rather than publishing.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any
 
 __all__ = [
     "CATEGORIES",
     "HIGH_RISK_CATEGORIES",
+    "RedactionCounts",
     "RedactionPolicy",
     "RedactionResult",
-    "RedactionCounts",
     "ScrubFailure",
     "minimal_policy",
-    "redact_text",
     "redact_record",
+    "redact_text",
+    "safe_text",
     "scan_high_risk",
     "scrub_guard",
-    "safe_text",
 ]
 
 #: Every category this build can recognise.
@@ -126,7 +127,7 @@ class RedactionCounts(dict):
         for name, count in counts.items():
             self.bump(name, count)
 
-    def finish(self) -> "RedactionCounts":
+    def finish(self) -> RedactionCounts:
         self["applied"] = sum(
             int(value) for key, value in self.items() if key not in {"stage", "applied"}
         )
