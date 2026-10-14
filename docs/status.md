@@ -103,6 +103,14 @@ The review of `e7abc33` found, correctly:
    field name and allowed choices stay truthful and a refused import persists no rows.
    The gate's preflight was also moved ahead of `uv sync`/build so a missing or
    under-provisioned host environment fails fast instead of after heavy work.
+6. **DT19 pilot fix pass (owner-approved, after the value benchmark).** Real Claude Code
+   transcripts refused to import (`duplicate event id`, `cyclic causal parent graph`), the
+   default line cap refused them too, the diagnosis went silent about text dropped by
+   policy, and payloads did not round-trip as records. Fixed: event ids are unique per
+   emitted event, parents are backward-only by construction, `import_max_line_bytes`
+   defaults to 8 MiB, the retention mode is recorded and reported as missing evidence, and
+   `as_dict()` payloads carry their `kind` so they validate as records. Three regressions
+   cover the real-file shapes. No diagnosis rule was tuned to a benchmark label.
 
 Earlier form of the two corrected statements, retained verbatim:
 `"tests/unit, tests/adversarial, tests/integration, tests/host. No tests/platform exists

@@ -76,6 +76,26 @@ a slash reply, a tool result, a caller's log or an exception cause chain. So:
 - Refusal text never echoes a credential-shaped identifier: it names a field position
   (`event #2 (identifier/reference field)`) instead.
 
+## Retention blindness is reported, not silent
+
+When an import runs under `metadata-only`, tool-result and error text is dropped by policy, so the
+diagnosis can locate *where* a run failed but cannot name *why*. The diagnosis says exactly that, as
+a first-class missing-evidence item:
+
+> error and tool-result text was not retained under the active retention policy (metadata-only), so
+> the mechanism behind a failure cannot be named from this evidence — re-import with a retention
+> mode that keeps redacted summaries if the mechanism matters more than minimisation
+
+The importer records the retention mode it ran under (`redaction.retention_mode`), which is what makes
+this possible. A reader is never left guessing whether a mechanism is missing because nobody said it
+or because policy removed it.
+
+## Import bounds and real-world files
+
+`import_max_line_bytes` defaults to **8 MiB**. Real agent transcripts (Claude Code session files, for
+example) embed prompt/attachment snapshots as single multi-megabyte lines; at the older 1 MiB default
+the atomic import refused the whole file. The file cap (64 MiB) and event cap (200 000) are unchanged.
+
 ## Exports and sharing
 
 - `export` is **operator-CLI only**: no agent tool, no slash subcommand, no gateway
