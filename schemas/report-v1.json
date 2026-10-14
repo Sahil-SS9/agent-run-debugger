@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "hermes-run-debugger/report-v1",
+  "title": "Agent Run Debugger Report v1",
+  "description": "Private report payload. Exports carry opaque references and redacted digests: no source paths, no raw input digests, no remote assets, no analytics.",
+  "type": "object",
+  "required": ["schema", "version", "run", "counts", "provenance", "cost", "timeline", "gaps", "limitations", "causal_findings"],
+  "properties": {
+    "schema": { "const": "hermes-run-debugger/report" },
+    "version": { "const": 1 },
+    "generated_at": { "type": "string" },
+    "run": {
+      "type": "object",
+      "required": ["ref", "completeness", "may_claim_complete"],
+      "properties": {
+        "ref": { "type": "string", "description": "opaque run reference in exports" },
+        "trace_ref": { "type": "string" },
+        "completeness": { "enum": ["complete", "partial", "unknown", "incomplete"] },
+        "may_claim_complete": { "type": "boolean" },
+        "imported_at": { "type": ["string", "null"] },
+        "revisions": { "type": "integer", "minimum": 0 },
+        "source_format": { "type": ["string", "null"] },
+        "source_scope": { "type": ["string", "null"] },
+        "covered_kinds": { "type": "array", "items": { "type": "string" } },
+        "unsupported_kinds": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "required": ["events", "attempts", "gaps", "failures", "interruptions"],
+      "properties": {
+        "events": { "type": "integer", "minimum": 0 },
+        "attempts": { "type": "integer", "minimum": 0 },
+        "gaps": { "type": "integer", "minimum": 0 },
+        "failures": { "type": "integer", "minimum": 0 },
+        "interruptions": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["observed", "reported", "inferred", "unknown"],
+      "properties": {
+        "observed": { "type": "integer" },
+        "reported": { "type": "integer" },
+        "inferred": { "type": "integer" },
+        "unknown": { "type": "integer" }
+      }
+    },
+    "cost": {
+      "type": "object",
+      "required": ["reported_total", "estimated_total", "cost_kind", "note"],
+      "properties": {
+        "reported_total": { "type": ["number", "null"], "description": "null when nothing was reported — never 0" },
+        "estimated_total": { "type": ["number", "null"] },
+        "cost_kind": { "enum": ["actual", "estimated", "unknown"] },
+        "price_source": { "type": ["string", "null"] },
+        "events_with_unknown_cost": { "type": "integer", "minimum": 0 },
+        "events_with_unknown_tokens": { "type": "integer", "minimum": 0 },
+        "reported_input_tokens": { "type": ["integer", "null"] },
+        "reported_output_tokens": { "type": ["integer", "null"] },
+        "note": { "type": "string" }
+      }
+    },
+    "timeline": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["ref", "kind", "status", "provenance"],
+        "properties": {
+          "ref": { "type": "string" },
+          "attempt_ref": { "type": "string" },
+          "kind": { "type": "string" },
+          "name": { "type": ["string", "null"] },
+          "status": { "type": "string" },
+          "at": { "type": ["string", "null"] },
+          "monotonic_ms": { "type": ["integer", "null"] },
+          "provenance": { "enum": ["observed", "reported", "inferred", "unknown"] },
+          "parents": { "type": "array", "items": { "type": "string" } },
+          "reported_error": { "type": "string" },
+          "usage": { "type": "object" }
+        }
+      }
+    },
+    "attempts": { "type": "array", "items": { "type": "object" } },
+    "gaps": { "type": "array", "items": { "type": "object" } },
+    "diagnosis": { "type": ["object", "null"] },
+    "redaction": { "type": "object" },
+    "limitations": { "type": "array", "items": { "type": "string" } },
+    "causal_findings": { "type": "array", "maxItems": 0 }
+  }
+}

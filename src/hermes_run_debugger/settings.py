@@ -18,19 +18,28 @@ from typing import Any
 from .jsonio import StreamLimits
 from .redact import RedactionPolicy
 
-__all__ = ["LANES", "REFUSAL_TEMPLATE", "UNSUPPORTED_LANES", "Settings"]
+__all__ = ["LANES", "LANE_SETTING_KEYS", "REFUSAL_TEMPLATE", "UNSUPPORTED_LANES", "Settings"]
 
 #: Opt-in lanes planned for later phases, none of them implemented in this build.
 UNSUPPORTED_LANES = ("capture", "live_read", "narrative", "experiment")
+#: Which settings key turns each deferred lane on. The mapping is explicit because
+#: the plan's key for the narration lane is ``llm_enabled``: a lane name that does
+#: not match its key is how an enabled lane ends up producing no refusal at all.
+LANE_SETTING_KEYS = {
+    "capture": "capture_enabled",
+    "live_read": "live_read_enabled",
+    "narrative": "llm_enabled",
+    "experiment": "experiment_enabled",
+}
 #: Lanes that exist in this build.
 LANES = ("import", "timeline", "diagnose", "replay", "export")
 
 REFUSAL_TEMPLATE = (
-    "{lane} is not implemented in this build: the setting is refused rather than ignored. "
-    "Offline import, timeline, diagnosis, inert replay and the private operator-CLI export are "
-    "the supported lanes; each deferred lane needs its own phase gate (capture: real host-emission "
-    "tests; live read: a proven non-writing read path; narration: an egress grant; experiment: a "
-    "verified sandbox and an owner-originated execution grant)."
+    "{lane} (setting {setting}) is not implemented in this build: the setting is refused rather "
+    "than ignored. Offline import, timeline, diagnosis, inert replay and the private operator-CLI "
+    "export are the supported lanes; each deferred lane needs its own phase gate (capture: real "
+    "host-emission tests; live read: a proven non-writing read path; narration: an egress grant; "
+    "experiment: a verified sandbox and an owner-originated execution grant)."
 )
 
 
@@ -99,8 +108,9 @@ class Settings:
         """Named refusals for lanes this build does not implement."""
         refusals: list[str] = []
         for lane in UNSUPPORTED_LANES:
-            if getattr(self, f"{lane}_enabled", False):
-                refusals.append(REFUSAL_TEMPLATE.format(lane=lane))
+            setting = LANE_SETTING_KEYS[lane]
+            if getattr(self, setting, False):
+                refusals.append(REFUSAL_TEMPLATE.format(lane=lane, setting=setting))
         if self.retention_mode not in {"redacted-summary", "metadata-only"}:
             refusals.append(
                 f"retention_mode {self.retention_mode!r} is not supported; use 'redacted-summary' "
@@ -111,9 +121,10 @@ class Settings:
     def lane_status(self) -> dict[str, str]:
         status = dict.fromkeys(LANES, "implemented")
         for lane in UNSUPPORTED_LANES:
+            enabled = bool(getattr(self, LANE_SETTING_KEYS[lane], False))
             status[lane] = (
                 "refused: enabled but not implemented in this build"
-                if getattr(self, f"{lane}_enabled", False)
+                if enabled
                 else "not implemented in this build"
             )
         return status

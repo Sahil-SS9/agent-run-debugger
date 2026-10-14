@@ -101,7 +101,11 @@ def test_plugin_registers_alone_on_a_real_host(monkeypatch, host_home, tmp_path)
 
     commands = plugins_module.get_plugin_commands()
     assert "rundebug" in commands
-    assert "rundebug_command" in getattr(manager, "_cli_commands", {}), "CLI subcommand missing"
+    cli_commands = getattr(manager, "_cli_commands", {})
+    assert "run-debug" in cli_commands, f"CLI subcommand missing: {sorted(cli_commands)}"
+    assert cli_commands["run-debug"]["plugin_key"] == PLUGIN_KEY
+    # Never shadow a built-in surface: `hermes verify` / `/verify` stay untouched.
+    assert "verify" not in cli_commands and "verify" not in commands
 
     # No hook is registered by this build. An observer on the host's fail-closed
     # pre_tool_call hook could block the user's agent, so its absence is asserted.
@@ -152,7 +156,7 @@ def test_tool_round_trip_through_the_host_registry(monkeypatch, host_home, tmp_p
     timeline = str(registry.dispatch("rundebug_timeline", {"run": "r-host"}, scope=manager.scope_key))
     assert "Bash" in timeline and "wall-clock order is not causation" in timeline.lower()
     explanation = str(registry.dispatch("rundebug_explain", {"run": "r-host"}, scope=manager.scope_key))
-    assert "hypothesis" in explanation.lower()
+    assert "hypothes" in explanation.lower(), explanation
     replay = str(registry.dispatch("rundebug_replay", {"run": "r-host"}, scope=manager.scope_key))
     assert "inert replay" in replay.lower()
 

@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "hermes-run-debugger/diagnosis-v1",
+  "title": "Agent Run Debugger Diagnosis v1",
+  "description": "Observed facts about a log, ranked hypotheses with their alternatives and falsifiers, missing evidence and read-only next checks. 'observed' entries are facts about the imported evidence (provenance attached). 'hypotheses' are explanations. causal_findings is always empty in v1: a causal claim requires a controlled intervention.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["run_id", "observed", "hypotheses", "missing_evidence", "next_diagnostics", "limitations", "causal_findings"],
+  "properties": {
+    "run_id": { "type": "string" },
+    "observed": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "detail", "provenance"],
+        "properties": {
+          "kind": { "type": "string", "description": "e.g. failure:tool_call, interrupted:event, contradiction:outcome_vs_events, anomaly:reported_usage, false_success:suspected, quarantine:contradictory_parents, empty:no_events" },
+          "event_ref": { "type": ["string", "null"] },
+          "detail": { "type": "string" },
+          "provenance": { "enum": ["observed", "reported", "inferred", "unknown"] }
+        }
+      }
+    },
+    "hypotheses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["rule_id", "statement", "confidence", "evidence_refs", "alternatives", "falsifiers"],
+        "properties": {
+          "rule_id": { "type": "string", "pattern": "^R[0-9]{3}$" },
+          "statement": { "type": "string" },
+          "confidence": { "enum": ["high", "medium", "low"], "description": "category derived from the stated evidence, never an uncalibrated number; a blocking evidence gap caps it at 'low'" },
+          "evidence_refs": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+          "alternatives": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+          "falsifiers": { "type": "array", "minItems": 1, "items": { "type": "string" } }
+        }
+      }
+    },
+    "missing_evidence": { "type": "array", "items": { "type": "string" } },
+    "next_diagnostics": { "type": "array", "items": { "type": "string" }, "description": "read-only checks; nothing here executes" },
+    "limitations": { "type": "array", "items": { "type": "string" } },
+    "cost": { "type": "object" },
+    "correctness_claims": { "type": "array", "maxItems": 0, "description": "v1 mints no verdict on the work. A finished run is not a passed task." },
+    "causal_findings": { "type": "array", "maxItems": 0, "description": "empty by design: a causal finding requires a controlled intervention this build does not perform" }
+  }
+}

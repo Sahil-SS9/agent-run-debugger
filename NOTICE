@@ -1,0 +1,13 @@
+Agent Run Debugger
+Copyright 2026 Sahil Saghir
+
+This product includes independently authored software that implements documented
+behavioural semantics of a third-party open-source component, as recorded in
+THIRD_PARTY_NOTICES.md:
+
+  session-report (plugins/session-report)
+  Copyright Anthropic
+  Licensed under the Apache License, Version 2.0
+  https://github.com/anthropics/claude-plugins-official/blob/8bd00f08f0b04705e610cf132fbe2cf5ec44cfe3/plugins/session-report/LICENSE
+
+No source code from that component was copied or translated into this product.
