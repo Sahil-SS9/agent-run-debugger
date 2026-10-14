@@ -33,6 +33,7 @@ __all__ = [
     "redact_record",
     "redact_text",
     "safe_text",
+    "sanitise_message",
     "scan_high_risk",
     "scrub_guard",
     "scrub_guard_payload",
@@ -266,6 +267,23 @@ def safe_text(value: Any) -> str:
     if not isinstance(value, str):
         value = "" if value is None else str(value)
     return _CONTROL.sub("", _ANSI.sub("", value))
+
+
+def sanitise_message(text: str, policy: RedactionPolicy | None = None) -> str:
+    """Make an error/refusal message safe to show, log, or return to a caller.
+
+    Error text is a leak path: a validation message that quotes the offending value
+    republishes it into a terminal, a log file, a report or a cause chain. Every
+    refusal built from input passes through here, so a malformed-input message carries
+    a field position and a static reason rather than a raw value.
+
+    Like every filter in this module this is not a guarantee — an unrecognised secret
+    shape is not detectable — so messages should also avoid echoing values at all
+    where a static reason will do.
+    """
+    if not isinstance(text, str):
+        text = str(text)
+    return redact_text(text, policy or minimal_policy()).text
 
 
 def is_sensitive_key(key: Any) -> bool:

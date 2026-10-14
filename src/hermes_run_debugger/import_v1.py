@@ -34,6 +34,7 @@ from .jsonio import (
     StreamLimits,
     scan_jsonl,
 )
+from .redact import sanitise_message
 
 __all__ = [
     "SUPPORTED_FORMATS",
@@ -69,12 +70,17 @@ _UNKNOWN_REFUSAL = (
 
 
 class ImportRefused(InputError):
-    """The source was refused. ``kind`` names why; ``reasons`` are the details."""
+    """The source was refused. ``kind`` names why; ``reasons`` are the details.
+
+    Reasons are sanitised before they leave this object: a refusal must never become a
+    vector for republishing the value that caused it — in a terminal, a slash reply, a
+    tool result, a caller's log or an exception cause chain.
+    """
 
     def __init__(self, kind: str, reasons: Sequence[str]):
         self.kind = kind
-        self.reasons = list(reasons)
-        super().__init__("; ".join(self.reasons))
+        self.reasons = [sanitise_message(str(reason)) for reason in reasons]
+        InputError.__init__(self, "; ".join(self.reasons))
 
 
 @dataclass

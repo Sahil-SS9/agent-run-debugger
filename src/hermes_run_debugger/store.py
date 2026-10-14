@@ -41,6 +41,7 @@ from .redact import (
     iter_high_risk_fields,
     minimal_policy,
     redact_record,
+    sanitise_message,
     scan_high_risk,
     scrub_guard_payload,
 )
@@ -538,7 +539,7 @@ class RunDebugStore:
     def load_run(self, run_id: str) -> StoredRun:
         row = self.conn.execute("select * from runs where run_id=?", (run_id,)).fetchone()
         if row is None:
-            raise StoreError(f"unknown run {run_id!r}")
+            raise StoreError(f"unknown run: {sanitise_message(run_id)}")
         events = [
             _event_from_payload(json.loads(r["payload_json"]))
             for r in self.conn.execute(

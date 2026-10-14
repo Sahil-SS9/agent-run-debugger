@@ -37,6 +37,7 @@ from .event_v1 import EVENT_KINDS, Gap, validate_trace_records
 from .identity import content_ref, redacted_content_ref, sha256_hex, stable_id
 from .import_v1 import ImportRefused, TraceImport, guard_source
 from .jsonio import InputLimitExceeded, MalformedRecord, ScanState, StreamLimits, scan_jsonl
+from .redact import sanitise_message
 
 __all__ = ["MAX_RESULT_SUMMARY", "RETENTION_MODES", "import_claude_trace"]
 
@@ -522,7 +523,8 @@ def _build_trace(
         )
     if stats["unsupported_records"]:
         notes.append(
-            "unsupported record types skipped (not guessed): " + ", ".join(unsupported_types[:5])
+            "unsupported record types skipped (not guessed): "
+            + sanitise_message(", ".join(unsupported_types[:5]))
         )
     if stats["duplicate_records_dropped"]:
         notes.append(f"{stats['duplicate_records_dropped']} replayed record(s) deduplicated by uuid")

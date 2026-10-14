@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .identity import is_valid_id
+from .redact import sanitise_message
 
 __all__ = [
     "DELIVERY",
@@ -322,7 +323,7 @@ class ValidationResult:
 
 
 def _refuse(issues: list[str], message: str) -> None:
-    issues.append(message)
+    issues.append(sanitise_message(message))
 
 
 def _check_nonfinite(value: Any, path: str, issues: list[str]) -> None:
@@ -348,7 +349,11 @@ def _check_fields(
     unknown = sorted(set(record) - allowed)
     if not unknown:
         return
-    message = f"{where}: unknown field(s) {', '.join(unknown)}"
+    # Field names come from the input, so they are shown sanitised, never raw, and only
+    # a bounded few — a field name can be a credential written in printable syntax.
+    shown = ", ".join(sanitise_message(name) for name in unknown[:5])
+    suffix = f" (+{len(unknown) - 5} more)" if len(unknown) > 5 else ""
+    message = f"{where}: unknown field(s) {shown}{suffix}"
     if policy == "reject":
         _refuse(issues, message + " — refused, not silently dropped")
     else:
@@ -378,7 +383,13 @@ def _require_id(
             _refuse(issues, f"{where}: missing required id field {key!r}")
         return None
     if not is_valid_id(value):
-        _refuse(issues, f"{where}.{key}: {value!r} is not a valid id")
+        # Static: the offending value is not repeated. A bad identifier can be a
+        # credential written in id syntax.
+        _refuse(
+            issues,
+            f"{where}.{key}: not a valid identifier "
+            "(letters, digits and . _ : @ / + ~ ^ = - only, max 128 characters)",
+        )
         return None
     return value
 
@@ -410,7 +421,11 @@ def _check_str_list(
             _refuse(issues, f"{where}.{key}[{idx}]: must be a string")
             continue
         if ids and not is_valid_id(item):
-            _refuse(issues, f"{where}.{key}[{idx}]: {item!r} is not a valid id")
+            _refuse(
+                issues,
+                f"{where}.{key}[{idx}]: not a valid identifier "
+                "(letters, digits and . _ : @ / + ~ ^ = - only, max 128 characters)",
+            )
             continue
         out.append(item)
     return out
@@ -420,7 +435,11 @@ def _check_wall_time(value: Any, where: str, issues: list[str]) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str) or not _WALL_RE.match(value):
-        _refuse(issues, f"{where}: wall_time must be ISO-8601 with an offset, got {value!r}")
+        # Static message: a malformed timestamp is not an invitation to republish it.
+        issues.append(
+            f"{where}: must be ISO-8601 with a numeric offset "
+            "(example: 2026-10-14T10:00:00Z or 2026-10-14T10:00:00+01:00)"
+        )
         return None
     return value
 
@@ -435,10 +454,16 @@ def _parse_clock(raw: Any, where: str, issues: list[str], policy: str, warnings:
     source = str(raw.get("source", "unknown")).lower()
     quality = str(raw.get("quality", "unknown")).lower()
     if source not in CLOCK_SOURCES:
-        _refuse(issues, f"{where}.clock.source: unknown clock source {source!r}")
+        _refuse(
+            issues,
+            f"{where}.clock.source: unknown clock source (supported: {', '.join(sorted(CLOCK_SOURCES))})",
+        )
         source = "unknown"
     if quality not in CLOCK_QUALITY:
-        _refuse(issues, f"{where}.clock.quality: unknown clock quality {quality!r}")
+        _refuse(
+            issues,
+            f"{where}.clock.quality: unknown clock quality (supported: {', '.join(sorted(CLOCK_QUALITY))})",
+        )
         quality = "unknown"
     drift = raw.get("drift_ms")
     if drift is not None and (isinstance(drift, bool) or not isinstance(drift, int)):
@@ -470,7 +495,10 @@ def _parse_usage(raw: Any, where: str, issues: list[str], policy: str, warnings:
         cost = None
     cost_kind = str(raw.get("cost_kind", "unknown")).lower()
     if cost_kind not in COST_KINDS:
-        _refuse(issues, f"{where}.usage.cost_kind: unknown cost kind {cost_kind!r}")
+        _refuse(
+            issues,
+            f"{where}.usage.cost_kind: unknown cost kind (supported: {', '.join(sorted(COST_KINDS))})",
+        )
         cost_kind = "unknown"
     if cost is None:
         cost_kind = "unknown"
@@ -565,11 +593,11 @@ def validate_trace_records(
 
     schema = head.get("schema")
     if schema != SCHEMA_ID:
-        issues.append(f"trace.schema: {schema!r} is not {SCHEMA_ID!r}")
+        issues.append(f"trace.schema: not the supported schema id (supported: {SCHEMA_ID})")
     version = head.get("version")
     if version != SCHEMA_VERSION:
         issues.append(
-            f"trace.version: unsupported version {version!r} (this build supports {SCHEMA_VERSION})"
+            f"trace.version: unsupported version (this build supports {SCHEMA_VERSION})"
         )
 
     source_raw = head.get("source")
@@ -579,7 +607,10 @@ def validate_trace_records(
     else:
         _check_fields(source_raw, _SOURCE_FIELDS, "trace.source", issues, warnings, unknown_field_policy)
         if source_raw.get("kind") not in SOURCE_KINDS:
-            issues.append(f"trace.source.kind: unknown source kind {source_raw.get('kind')!r}")
+            issues.append(
+                "trace.source.kind: unknown source kind "
+                f"(supported: {', '.join(sorted(SOURCE_KINDS))})"
+            )
         ref = source_raw.get("ref")
         if not isinstance(ref, str) or not ref:
             issues.append("trace.source.ref: required string (private content digest)")
@@ -608,13 +639,19 @@ def validate_trace_records(
         )
         status = completeness_raw.get("status")
         if status not in COMPLETENESS_STATUS:
-            issues.append(f"trace.completeness.status: unknown status {status!r}")
+            issues.append(
+                "trace.completeness.status: unknown status "
+                f"(supported: {', '.join(sorted(COMPLETENESS_STATUS))})"
+            )
 
     covered = _check_str_list(head, "covered_kinds", "trace", issues)
     unsupported = _check_str_list(head, "unsupported_kinds", "trace", issues)
     for kind in covered + unsupported:
         if kind not in EVENT_KINDS:
-            issues.append(f"trace covered/unsupported kind {kind!r} is not a known event kind")
+            issues.append(
+                "trace.covered_kinds/unsupported_kinds: a declared kind is not a supported event "
+                f"kind (supported: {', '.join(sorted(EVENT_KINDS))})"
+            )
 
     _check_wall_time(head.get("created_at"), "trace.created_at", issues)
 
@@ -654,21 +691,25 @@ def validate_trace_records(
             if event is not None:
                 result.events.append(event)
         else:
-            issues.append(f"record {idx}: unknown record kind {kind!r}")
+            issues.append(
+                f"record {idx}: unknown record kind (supported: trace, attempt, event) — "
+                "kind shown sanitised: " + sanitise_message(str(kind))
+            )
 
     duplicates = _duplicates(attempt_ids)
     for dup in duplicates:
-        issues.append(f"duplicate attempt id {dup!r}")
+        issues.append(f"duplicate attempt id: {sanitise_message(dup)}")
     seen_events: list[str] = []
     for event in result.events:
         if event.run_id != envelope.run_id:
             issues.append(
-                f"event {event.event_id}: run_id {event.run_id!r} does not match trace run_id "
-                f"{envelope.run_id!r}"
+                f"event {sanitise_message(event.event_id)}: run_id "
+                f"{sanitise_message(event.run_id)} does not match trace run_id "
+                f"{sanitise_message(envelope.run_id)}"
             )
         seen_events.append(event.event_id)
     for dup in _duplicates(seen_events):
-        issues.append(f"duplicate event id {dup!r}")
+        issues.append(f"duplicate event id: {sanitise_message(dup)}")
 
     known_attempts = set(attempt_ids)
     for event in result.events:
@@ -695,19 +736,25 @@ def validate_trace_records(
 
     cycle = _detect_cycle(result.parent_edges)
     if cycle:
-        issues.append(f"cyclic causal parent graph refused: {' -> '.join(cycle)}")
+        issues.append(
+            "cyclic causal parent graph refused: "
+            + " -> ".join(sanitise_message(node) for node in cycle)
+        )
     self_loops = [e for e in result.events if e.event_id in e.causal_parents]
     for event in self_loops:
-        issues.append(f"event {event.event_id}: causal parent references itself")
+        issues.append(
+            f"event {sanitise_message(event.event_id)}: causal parent references itself"
+        )
 
     result.trace = envelope
     return _finish(result, issues, refuse)
 
 
 def _finish(result: ValidationResult, issues: list[str], refuse: str) -> ValidationResult:
-    result.refused = issues
-    if issues and refuse == "raise":
-        raise TraceValidationError("; ".join(issues[:8]) + (" …" if len(issues) > 8 else ""))
+    result.refused = [sanitise_message(issue) for issue in issues]
+    if result.refused and refuse == "raise":
+        joined = "; ".join(result.refused[:8]) + (" …" if len(result.refused) > 8 else "")
+        raise TraceValidationError(sanitise_message(joined))
     return result
 
 
@@ -735,7 +782,9 @@ def _parse_attempt(
     run_id = _require_id(record, "run_id", where, issues)
     outcome = record.get("outcome")
     if outcome not in OUTCOMES:
-        issues.append(f"{where}.outcome: unknown outcome {outcome!r}")
+        issues.append(
+            f"{where}.outcome: unknown outcome (supported: {', '.join(sorted(OUTCOMES))})"
+        )
         outcome = "unknown"
     parent = _require_id(record, "parent_attempt_id", where, issues, optional=True)
     sequence = _require_int(record, "sequence", where, issues, optional=True) or 0
@@ -784,20 +833,27 @@ def _parse_event(
     attempt_id = _require_id(record, "attempt_id", where, issues)
     kind = record.get("event_kind")
     if kind not in EVENT_KINDS:
-        issues.append(f"{where}.event_kind: {kind!r} is not a supported event kind")
+        issues.append(
+            f"{where}.event_kind: unsupported event kind "
+            f"(supported: {', '.join(sorted(EVENT_KINDS))})"
+        )
     provenance = record.get("semantic_provenance")
     if provenance not in PROVENANCE:
         issues.append(
-            f"{where}.semantic_provenance: {provenance!r} is not one of "
-            f"{sorted(PROVENANCE)} — missing evidence stays UNKNOWN"
+            f"{where}.semantic_provenance: unsupported value "
+            f"(supported: {', '.join(sorted(PROVENANCE))}) — missing evidence stays UNKNOWN"
         )
     status = record.get("reported_status", "unknown")
     if status not in REPORTED_STATUS:
-        issues.append(f"{where}.reported_status: unknown status {status!r}")
+        issues.append(
+            f"{where}.reported_status: unknown status (supported: {', '.join(sorted(REPORTED_STATUS))})"
+        )
         status = "unknown"
     delivered = record.get("delivered_via", "import")
     if delivered not in DELIVERY:
-        issues.append(f"{where}.delivered_via: unknown delivery channel {delivered!r}")
+        issues.append(
+            f"{where}.delivered_via: unknown delivery channel (supported: {', '.join(sorted(DELIVERY))})"
+        )
         delivered = "unknown"
     sequence = _require_int(record, "source_sequence", where, issues)
     if sequence is None or sequence < 0:

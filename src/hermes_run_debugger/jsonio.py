@@ -28,6 +28,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .redact import sanitise_message
+
 __all__ = [
     "CHUNK_BYTES",
     "InputError",
@@ -46,7 +48,15 @@ CHUNK_BYTES = 65536
 
 
 class InputError(Exception):
-    """Base class for refused or unreadable input."""
+    """Base class for refused or unreadable input.
+
+    Message text is sanitised at construction: an input error can quote a file name,
+    a line or a decoder fragment, and error text is a leak path into a terminal, a log
+    or a report. Subclasses inherit the behaviour, so no raise site can forget it.
+    """
+
+    def __init__(self, message: str = "") -> None:
+        super().__init__(sanitise_message(str(message)))
 
 
 class InputLimitExceeded(InputError):

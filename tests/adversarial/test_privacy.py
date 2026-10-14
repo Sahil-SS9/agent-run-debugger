@@ -282,17 +282,19 @@ SK_KEY = "sk-A1b2C3d4E5f6G7h8I9j0K1l2"
 
 def write_trace_file(tmp_path, *, run_id="r-ids", event_id="evt_a1b2c3d4e5f6", attempt_id="att_0be0ef46",
                      source_ref=None, evidence_ref="claude:request:r1", arguments_ref=None,
-                     private_digests=None, name="session.jsonl"):
+                     private_digests=None, name="session.jsonl", schema="hermes-run-debugger/trace",
+                     event_kind="tool_call", wall_time="2026-10-14T10:00:01Z",
+                     completeness_status="complete", record_kind="event", extra_event=None):
     """A valid, accepted event-v1 JSONL file (the real import path, not a fabricated result)."""
     header = {
-        "kind": "trace", "schema": "hermes-run-debugger/trace", "version": 1,
+        "kind": "trace", "schema": schema, "version": 1,
         "trace_id": "t-ids", "run_id": run_id, "importer": "test", "importer_version": "0.1.0",
         "source_format": "event-v1", "source_scope": "explicit-selection",
         "created_at": "2026-10-14T10:00:00Z",
         "source": {"kind": "file", "ref": source_ref or ("sha256:" + "c" * 64), "name": name},
         "redaction": {"policy": "minimal-metadata", "applied_count": 0},
         "covered_kinds": ["tool_call"], "unsupported_kinds": [],
-        "completeness": {"status": "complete", "missing_kinds": [], "notes": []},
+        "completeness": {"status": completeness_status, "missing_kinds": [], "notes": []},
     }
     if private_digests is not None:
         header["private_digests"] = private_digests
@@ -303,16 +305,18 @@ def write_trace_file(tmp_path, *, run_id="r-ids", event_id="evt_a1b2c3d4e5f6", a
         "outcome": "failed", "unknowns": [],
     }
     event = {
-        "kind": "event", "event_id": event_id, "run_id": run_id, "attempt_id": attempt_id,
+        "kind": record_kind, "event_id": event_id, "run_id": run_id, "attempt_id": attempt_id,
         "span_id": None, "causal_parents": [], "source_sequence": 0,
-        "wall_time": "2026-10-14T10:00:01Z", "monotonic_ms": 1000,
-        "clock": {"source": "monotonic", "quality": "high"}, "event_kind": "tool_call",
+        "wall_time": wall_time, "monotonic_ms": 1000,
+        "clock": {"source": "monotonic", "quality": "high"}, "event_kind": event_kind,
         "reported_status": "failed", "reported_error": "boom", "usage": {},
         "evidence_ref": evidence_ref, "delivered_via": "import",
         "semantic_provenance": "reported", "gaps": [], "contradictions": [], "name": "Bash",
     }
     if arguments_ref is not None:
         event["arguments_ref"] = arguments_ref
+    if extra_event is not None:
+        event.update(extra_event)
     path = tmp_path / name
     path.write_text("".join(json.dumps(record) + "\n" for record in (header, attempt, event)), encoding="utf-8")
     return path
@@ -387,6 +391,101 @@ def test_legitimate_ids_keep_their_linkage_through_the_store(tmp_path):
     assert "[redacted" not in json.dumps(run.trace)
     assert validate_trace_records([run.trace])  # the stored envelope still validates
 
+
+
+# --------------------------------------------------------------------------
+# F1 regressions (recheck of 2a8901c): ordinary validation refusals must not echo
+# the offending value into a message, a cause chain, stdout or a log — on every
+# public path (import service, CLI, slash, tool).
+# --------------------------------------------------------------------------
+
+REFUSAL_CASES = [
+    ("schema", {"schema": GITHUB_TOKEN}, "schema"),
+    ("event_kind", {"event_kind": GITHUB_TOKEN}, "event_kind"),
+    ("wall_time", {"wall_time": GITHUB_TOKEN}, "wall_time"),
+    ("record_kind", {"record_kind": GITHUB_TOKEN}, "kind"),
+    ("completeness_status", {"completeness_status": GITHUB_TOKEN}, "status"),
+    ("unknown_field_name", {"extra_event": {GITHUB_TOKEN: 1}}, "unknown field"),
+]
+
+
+def _assert_no_seed_anywhere(exc, seed=GITHUB_TOKEN):
+    """The message, every reason, and the whole cause chain must be free of the seed."""
+    surfaces = [str(exc), repr(exc)]
+    surfaces += [str(reason) for reason in getattr(exc, "reasons", [])]
+    cause = exc.__cause__
+    depth = 0
+    while cause is not None and depth < 5:
+        surfaces.append(str(cause))
+        surfaces.append(repr(cause))
+        cause = getattr(cause, "__cause__", None)
+        depth += 1
+    for surface in surfaces:
+        assert seed not in surface, f"refusal surfaced the seed: {surface[:200]}"
+
+
+@pytest.mark.parametrize("label, kwargs, expected_field", REFUSAL_CASES)
+def test_validation_refusals_never_echo_the_offending_value(tmp_path, label, kwargs, expected_field):
+    from hermes_run_debugger.import_v1 import ImportRefused
+
+    path = write_trace_file(tmp_path, **kwargs)
+    with pytest.raises(ImportRefused) as exc:
+        _import_through_services(path, tmp_path)
+    _assert_no_seed_anywhere(exc.value)
+
+    # ...while still telling the operator which field and why, and staying truthful
+    reasons = " ".join(exc.value.reasons)
+    assert expected_field in reasons, f"{label}: refusal lost its field name: {reasons}"
+    assert exc.value.kind == "schema", f"{label}: refusal kind was {exc.value.kind!r}"
+    assert reasons.strip(), f"{label}: refusal had no reason text"
+    # a refused import persists no rows: no run, no event, no journal entry
+    data_dir = tmp_path / "plugin-data"
+    if (data_dir / "rundebug.db").exists():
+        with RunDebugStore(data_dir) as store:
+            assert store.count_rows("runs") == 0
+            assert store.count_rows("events") == 0
+            assert store.count_rows("import_journal") == 0
+
+
+@pytest.mark.parametrize("label, kwargs, expected_field", REFUSAL_CASES)
+def test_refusal_surfaces_are_sanitised_on_every_public_path(tmp_path, label, kwargs, expected_field, capsys):
+    from hermes_run_debugger.cli import Services, handle_slash, run_cli, tool_import
+
+    path = write_trace_file(tmp_path, **kwargs)
+    data_dir = tmp_path / "plugin-data"
+
+    with Services(data_dir=data_dir) as services:
+        # CLI
+        code = run_cli(["import", "--file", str(path)], services)
+        cli_out = capsys.readouterr()
+        assert code == 3, f"{label}: CLI exit {code}"
+        assert GITHUB_TOKEN not in cli_out.out
+        assert expected_field in cli_out.out, cli_out.out[:200]
+
+        # slash
+        slash_out = handle_slash(f"import {path}", services)
+        assert GITHUB_TOKEN not in slash_out
+        assert expected_field in slash_out, slash_out[:200]
+
+        # agent tool
+        tool_out = tool_import({"files": [str(path)]}, services)
+        assert GITHUB_TOKEN not in tool_out
+        assert "refused" in tool_out.lower()
+
+    # no owned file anywhere holds the seed
+    for name, blob in _files_under(data_dir).items():
+        assert GITHUB_TOKEN.encode() not in blob, f"{name} holds the seed"
+
+
+def test_valid_input_linkage_is_unchanged_by_the_sanitiser(tmp_path):
+    from hermes_run_debugger.cli import Services
+
+    path = write_trace_file(tmp_path)
+    with Services(data_dir=tmp_path / "plugin-data") as services:
+        imported = services.import_sources([path], fmt="v1")
+        assert imported[0]["run_id"] == "r-ids"
+        assert imported[0]["events"] == 1
+        assert "Bash" in services.timeline_text("r-ids")
 
 
 def test_policy_is_configurable_and_count_only():

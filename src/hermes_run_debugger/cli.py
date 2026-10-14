@@ -21,7 +21,7 @@ from . import __version__
 from .diagnose import diagnose
 from .import_v1 import ImportRefused, import_trace
 from .jsonio import InputLimitExceeded
-from .redact import ScrubFailure
+from .redact import ScrubFailure, sanitise_message
 from .replay import replay_events
 from .settings import Settings
 from .store import RunDebugStore
@@ -337,7 +337,7 @@ def run_cli(argv: Sequence[str], services: Services) -> int:
         print(f"refused (limits): {exc}")
         return 3
     except (TimelineContradiction, FileNotFoundError, ValueError) as exc:
-        print(f"error: {exc}")
+        print(f"error: {sanitise_message(str(exc))}")
         return 1
 
 
@@ -415,7 +415,7 @@ def handle_slash(raw_args: str, services: Services) -> str:
     except ImportRefused as exc:
         return f"refused ({exc.kind}): {'; '.join(exc.reasons)}"
     except (InputLimitExceeded, TimelineContradiction, FileNotFoundError, ValueError) as exc:
-        return f"error: {exc}"
+        return f"error: {sanitise_message(str(exc))}"
 
 
 # -- agent tools ----------------------------------------------------------
