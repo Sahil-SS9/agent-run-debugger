@@ -226,6 +226,48 @@ def test_secrets_never_reach_the_store_or_the_export(tmp_path):
             assert GITHUB_TOKEN.encode() not in path.read_bytes(), f"{path.name} holds the token"
 
 
+def test_identifiers_are_never_rewritten_by_redaction():
+    """Redaction must not corrupt evidence linkage: ids survive verbatim."""
+    ids = [
+        "evt_f4f1e2d3c4b5a6b7c8d9e0f1a2b3c4d",
+        "att_0be0ef464321a45285a4",
+        "ref:0001",
+        "redacted-sha256:0123456789abcdef",
+        "run_claude_6abf20338e84",
+    ]
+    text = " ".join(ids)
+    result = redact_text(text)
+    assert result.text == text, f"identifiers were rewritten: {result.text}"
+
+    # A standalone long digit run in *free text* is card-like and is redacted;
+    # identifiers are protected by field name, not by pattern.
+    standalone = redact_text("account 4111111111111111 on file")
+    assert "4111111111111111" not in standalone.text
+    assert standalone.counts.get("card_number", standalone.counts.get("phone", 0)) >= 1
+
+    record, _counts = redact_record(
+        {
+            "event_id": "evt_1234567890123456",
+            "causal_parents": ["evt_1234567890123456"],
+            "reported_error": "card 4111 1111 1111 1111 was quoted",
+        },
+        stage="pre-store",
+    )
+    assert record["event_id"] == "evt_1234567890123456"
+    assert record["causal_parents"] == ["evt_1234567890123456"]
+    assert "4111 1111 1111 1111" not in record["reported_error"]
+
+
+def test_store_round_trip_preserves_event_ids(tmp_path):
+    """A stored-then-loaded run keeps the ids the timeline and parents depend on."""
+    trace = trace_with("boom")
+    with RunDebugStore(tmp_path) as store:
+        store.import_trace(trace, source_summary={"path": "x.jsonl", "sha256": "s"})
+        run = store.load_run("r-priv")
+    assert [event.event_id for event in run.events] == [event.event_id for event in trace.events]
+    assert "[redacted" not in run.events[0].event_id
+
+
 def test_policy_is_configurable_and_count_only():
     policy = RedactionPolicy(name="minimal-metadata", redact_emails=False)
     result = redact_text(f"mail {EMAIL} key {OPENAI_KEY}", policy=policy)

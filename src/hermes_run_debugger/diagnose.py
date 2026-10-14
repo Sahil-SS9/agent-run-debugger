@@ -338,8 +338,9 @@ def _hypothesise(diagnosis: Diagnosis, events: Sequence[Event], timeline: Timeli
             ))
 
     tool_events = by_kind.get("tool_call", [])
-    failed_tools = [event for event in tool_events if event.reported_status == "failed"
-                    and event.span_id is None]
+    # A failed tool *result* counts exactly like a failed tool start: the source
+    # recorded a tool step that reported failure.
+    failed_tools = [event for event in tool_events if event.reported_status == "failed"]
     if failed_tools:
         terminal = [event for event in failed_tools if not _later_success(tool_events, event)]
         confidence = "high" if len(terminal) >= 2 else "medium"

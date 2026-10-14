@@ -656,4 +656,6 @@ def _event_from_payload(payload: Mapping[str, Any]) -> Event:
         delivered_via=str(payload.get("delivered_via", "import")),
         gaps=tuple(payload.get("gaps") or ()),
         contradictions=tuple(payload.get("contradictions") or ()),
+        name=payload.get("name"),
+        arguments_ref=payload.get("arguments_ref"),
     )

@@ -22,7 +22,11 @@ provides_tools:
   - rundebug_replay
   - rundebug_status
 provides_hooks: []
-provides_middleware: []
+
+# No `provides_middleware` key: this build registers no middleware, and the target
+# host's manifest parser reports the key as an unknown field (a warning, not a
+# load failure) — declaring an empty capability set it cannot parse adds noise
+# without adding a guarantee.
 
 # No environment variables are read by this plugin.
 requires_env: []
@@ -75,6 +79,13 @@ config_schema:
     type: bool
     default: false
     description: When true, a truncated final JSONL line keeps its valid prefix, marked PARTIAL with an import gap.
+  retention_mode:
+    type: str
+    default: redacted-summary
+    description: >-
+      What is retained for tool-result text: "redacted-summary" keeps a bounded, redacted summary
+      (prompt text and tool arguments are never retained either way), "metadata-only" keeps status
+      and references only.
   retention_days:
     type: int
     default: 90

@@ -160,6 +160,7 @@ def build_report(
             "ref": ref("event", getattr(event, "event_id", "")),
             "attempt_ref": ref("attempt", getattr(event, "attempt_id", "")),
             "kind": getattr(event, "event_kind", "note"),
+            "name": getattr(event, "name", None),
             "status": status,
             "at": getattr(event, "wall_time", None),
             "monotonic_ms": getattr(event, "monotonic_ms", None),
@@ -266,16 +267,16 @@ def render_markdown(report: Mapping[str, Any]) -> str:
     lines.append("")
     lines.append("## Timeline")
     lines.append("")
-    lines.append("| ref | kind | status | at | provenance | error |")
-    lines.append("|---|---|---|---|---|---|")
+    lines.append("| ref | kind | subject | status | at | provenance | error |")
+    lines.append("|---|---|---|---|---|---|---|")
     for entry in report["timeline"]:
         lines.append(
-            f"| {_md_cell(entry['ref'])} | {_md_cell(entry['kind'])} | {_md_cell(entry['status'])} "
-            f"| {_md_cell(entry['at'])} | {_md_cell(entry['provenance'])} "
-            f"| {_md_cell(entry['reported_error'])} |"
+            f"| {_md_cell(entry['ref'])} | {_md_cell(entry['kind'])} | {_md_cell(entry.get('name'))} "
+            f"| {_md_cell(entry['status'])} | {_md_cell(entry['at'])} "
+            f"| {_md_cell(entry['provenance'])} | {_md_cell(entry['reported_error'])} |"
         )
     if not report["timeline"]:
-        lines.append("| (no events) | | | | | |")
+        lines.append("| (no events) | | | | | | |")
     lines.append("")
     lines.append("## Attempts")
     lines.append("")
@@ -366,7 +367,7 @@ def render_html(report: Mapping[str, Any], *, title: str = "Agent run report") -
         f"<li>{esc(report['cost']['note'])}</li>",
         "</ul>",
         "<h2>Timeline</h2>",
-        "<table><thead><tr><th>ref</th><th>kind</th><th>status</th><th>at</th>"
+        "<table><thead><tr><th>ref</th><th>kind</th><th>subject</th><th>status</th><th>at</th>"
         "<th>provenance</th><th>error</th></tr></thead><tbody>",
     ]
     for entry in report["timeline"]:
@@ -374,6 +375,7 @@ def render_html(report: Mapping[str, Any], *, title: str = "Agent run report") -
             "<tr>"
             f"<td><code>{esc(entry['ref'])}</code></td>"
             f"<td>{esc(entry['kind'])}</td>"
+            f"<td>{esc(entry.get('name'))}</td>"
             f"<td>{esc(entry['status'])}</td>"
             f"<td>{esc(entry['at'])}</td>"
             f"<td>{esc(entry['provenance'])}</td>"

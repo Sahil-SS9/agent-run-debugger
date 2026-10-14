@@ -96,6 +96,10 @@ class RedactionPolicy:
             "as 'no known shape matched', never as 'nothing sensitive was captured'.",
             "Raw input digests can disclose low-entropy information, so they stay in the private "
             "store and are omitted from exports.",
+            "Identifier fields (event, attempt, span, run and reference ids) pass through "
+            "unchanged: they are bounded tokens validated by the schema, and rewriting them would "
+            "corrupt evidence linkage. A credential placed in an id-shaped field would therefore "
+            "not be detected by this filter.",
             "Disabled categories are honoured by this filter and then refused by the second-stage "
             "guard, which is why a misconfigured policy cannot silently persist a credential.",
         ]
@@ -157,8 +161,11 @@ _AWS = re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{12,}")
 _SLACK = re.compile(r"\bxox[abpsr]-[A-Za-z0-9-]{8,}")
 _JWT = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}")
 _EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+\b")
+# Bounded by non-word characters on both sides: a digit run *inside* an identifier
+# (a hex event id, a uuid, a digest) is not a card number, and rewriting it would
+# corrupt evidence linkage.
 _PHONE = re.compile(r"(?<![\w.-])(\+?\d[\d ().-]{7,}\d)(?![\w.-])")
-_CARD = re.compile(r"(?<!\d)(?:\d[ -]?){13,19}(?!\d)")
+_CARD = re.compile(r"(?<![\w-])(?:\d[ -]?){13,19}(?![\w-])")
 _HOME_PATH = re.compile(r"(?<![\w/])(/(?:home|Users)/)([A-Za-z0-9._-]+)")
 _WIN_HOME = re.compile(r"([A-Za-z]:\\+Users\\+)([^\\\s]+)")
 _IPV4 = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
@@ -174,6 +181,17 @@ _SENSITIVE_KEY_RE = re.compile(
       |reasoning|reasoning_deltas|stream_delta|deltas|approval_body|provider_headers
     )$"""
 )
+
+#: Fields whose value is an *identifier*: a bounded token validated by the schema,
+#: used to link evidence. Redacting one would corrupt linkage (an imported event id
+#: that no longer matches its parents is worse than useless), and the schema's id
+#: shape already excludes paths, whitespace and credentials.
+_IDENTIFIER_KEYS = frozenset({
+    "event_id", "attempt_id", "span_id", "run_id", "trace_id", "parent_attempt_id",
+    "causal_parents", "evidence_ref", "arguments_ref", "journal_id", "gap_id",
+    "snapshot_sha256", "ref", "trace_ref", "run_ref", "event_ref", "attempt_ref",
+    "parent_ref", "source_ref", "sha256", "content", "files",
+})
 
 
 def _keyword_replace(match: re.Match[str]) -> str:
@@ -260,6 +278,9 @@ def redact_record(
                     out[key] = f"[redacted:key:{key}]"
                     counts.bump("dropped_key")
                     continue
+                if isinstance(key, str) and key.strip().lower() in _IDENTIFIER_KEYS:
+                    out[key] = walk_identifiers(item)
+                    continue
                 out[key] = walk(item)
             return out
         if isinstance(value, (list, tuple)):
@@ -268,6 +289,14 @@ def redact_record(
             result = redact_text(value, policy)
             counts.merge(result.counts)
             return result.text
+        return value
+
+    def walk_identifiers(value: Any) -> Any:
+        """Identifiers pass through unchanged (bounded tokens, not free text)."""
+        if isinstance(value, (list, tuple)):
+            return [walk_identifiers(item) for item in value]
+        if isinstance(value, Mapping):
+            return {key: walk_identifiers(item) for key, item in value.items()}
         return value
 
     return walk(record), counts.finish()
