@@ -34,8 +34,16 @@ from typing import Any
 
 from . import migrations as _migrations
 from .event_v1 import Attempt, Clock, Event, Usage
-from .identity import opaque_ref
-from .redact import RedactionPolicy, minimal_policy, redact_record, scrub_guard
+from .identity import is_digest_value, opaque_ref
+from .redact import (
+    RedactionPolicy,
+    ScrubFailure,
+    iter_high_risk_fields,
+    minimal_policy,
+    redact_record,
+    scan_high_risk,
+    scrub_guard_payload,
+)
 from .report import build_report, render, write_report
 
 __all__ = [
@@ -252,23 +260,88 @@ class RunDebugStore:
         trace_payload, trace_counts = redact_record(result.trace.as_dict(), stage="pre-store", policy=self.policy)
         applied = _sum_counts(source_counts) + _sum_counts(trace_counts)
 
+        # A sensitive-shaped value found in an identifier/reference/digest field is
+        # refused outright. Silently rewriting it would break evidence linkage, and
+        # persisting it would be the very leak this store exists to prevent. The note
+        # names the field only — never the value.
+        blocked_fields: list[str] = []
+        if source_counts.get("blocked_identifier"):
+            blocked_fields.append("source summary (identifier/reference field)")
+        if trace_counts.get("blocked_identifier"):
+            blocked_fields.append("trace envelope (identifier/reference field)")
+
         event_payloads: list[tuple[Event, dict[str, Any]]] = []
-        for event in result.events:
+        for index, event in enumerate(result.events, start=1):
             payload, counts = redact_record(event.as_dict(), stage="pre-store", policy=self.policy)
-            text = payload.get("reported_error") or ""
-            scrub_guard(text, self.policy)
+            if counts.get("blocked_identifier"):
+                # Position, never the value: a refusal message must not echo the secret
+                # back into a log, a terminal or the operator's clipboard.
+                blocked_fields.append(f"event #{index} (identifier/reference field)")
+            scrub_guard_payload(payload, self.policy)
             applied += _sum_counts(counts)
             event_payloads.append((event, payload))
         attempt_payloads: list[tuple[Attempt, dict[str, Any]]] = []
-        for attempt in result.attempts:
+        for index, attempt in enumerate(result.attempts, start=1):
             payload, counts = redact_record(attempt.as_dict(), stage="pre-store", policy=self.policy)
+            if counts.get("blocked_identifier"):
+                blocked_fields.append(f"attempt #{index} (identifier/reference field)")
+            scrub_guard_payload(payload, self.policy)
             applied += _sum_counts(counts)
             attempt_payloads.append((attempt, payload))
         gap_payloads: list[dict[str, Any]] = []
         for gap in result.gaps:
             payload, counts = redact_record(gap.as_dict(), stage="pre-store", policy=self.policy)
+            if counts.get("blocked_identifier"):
+                blocked_fields.append("evidence gap (identifier/reference field)")
+            scrub_guard_payload(payload, self.policy)
             applied += _sum_counts(counts)
             gap_payloads.append(payload)
+        scrub_guard_payload(trace_payload, self.policy)
+        scrub_guard_payload(redacted_source, self.policy)
+
+        # The envelope's private digest map is not persisted (private digests live in
+        # the store's own columns), but a value smuggled into a digest-shaped field is
+        # refused: it means the trace is not the shape it claims to be, and refusing
+        # keeps a credential from being quietly dropped in one place and kept in another.
+        envelope_hits = iter_high_risk_fields(result.trace.private_digests or {}, self.policy)
+        digest_keys = {"content", "sha256", "content_sha256", "digest"}
+        bad_digests = [
+            key
+            for key, value in (result.trace.private_digests or {}).items()
+            if key.lower() in digest_keys and isinstance(value, str) and not is_digest_value(value)
+        ]
+        for entry in (result.trace.private_digests or {}).get("files", []) or []:
+            if isinstance(entry, Mapping):
+                bad_digests.extend(
+                    f"files[].{key}" for key, value in entry.items()
+                    if key.lower() in digest_keys and isinstance(value, str) and not is_digest_value(value)
+                )
+
+        if blocked_fields:
+            raise ScrubFailure(
+                "refused: a sensitive-shaped value was found in an identifier/reference field ("
+                + ", ".join(sorted(set(blocked_fields)))
+                + "). The source is refused rather than persisted: no raw value was written and no "
+                "identifier was silently rewritten. Re-export the trace without credentials in id "
+                "or reference fields, or choose a different source."
+            )
+        if envelope_hits or bad_digests:
+            detail = "; ".join(
+                [f"{path}: {', '.join(categories)}" for path, categories in envelope_hits[:3]]
+                + ([f"non-digest value in {sorted(set(bad_digests))}"] if bad_digests else [])
+            )
+            raise ScrubFailure(
+                "refused: the envelope's private digest map contains a value that is not a digest "
+                f"or is credential-shaped ({detail}). Digest fields carry digests only; the source "
+                "is refused rather than stored or silently dropped."
+            )
+        # The snapshot identity is written to columns of its own (journal, revisions),
+        # so it is value-checked before any of them are touched.
+        if scan_high_risk(snapshot, self.policy):
+            raise ScrubFailure(
+                "refused: the source snapshot identity is credential-shaped. Re-export the trace with "
+                "a genuine digest so the import can be identified without storing a secret."
+            )
 
         stamp = imported_at or _now()
         journal_id = uuid.uuid4().hex

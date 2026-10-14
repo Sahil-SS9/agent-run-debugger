@@ -24,9 +24,11 @@ from collections.abc import Iterable
 from typing import Any
 
 __all__ = [
+    "DIGEST_RE",
     "ID_RE",
     "canonical_json",
     "content_ref",
+    "is_digest_value",
     "is_valid_id",
     "opaque_ref",
     "redacted_content_ref",
@@ -34,13 +36,24 @@ __all__ = [
     "stable_id",
 ]
 
-# Conservative identity shape: a bounded, printable, control-character-free
-# token. Ids that fail this are refused rather than normalised.
+# Conservative identity shape: a bounded, printable, control-character-free token.
+# Ids that fail this are refused rather than normalised.
+#
+# NOTE: printable ID syntax is NOT a security property. A credential can be written
+# in ID syntax (`ghp_…`, `sk-…` are printable tokens), so an id-shaped value is only
+# accepted after a high-risk value check — never because it "looks like an id".
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/+~^=-]{0,127}$")
+#: Digest grammar accepted for schema-validated digest fields.
+DIGEST_RE = re.compile(r"^(?:sha256:|redacted-sha256:)?[0-9a-f]{32,128}$")
 
 
 def is_valid_id(value: Any) -> bool:
     return isinstance(value, str) and bool(ID_RE.fullmatch(value)) and "\x00" not in value
+
+
+def is_digest_value(value: Any) -> bool:
+    """True for a genuine digest (bare hex or ``sha256:``/``redacted-sha256:`` prefixed)."""
+    return isinstance(value, str) and bool(DIGEST_RE.fullmatch(value))
 
 
 def canonical_json(value: Any) -> str:

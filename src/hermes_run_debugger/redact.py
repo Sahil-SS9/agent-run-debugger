@@ -19,6 +19,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from .identity import is_digest_value, is_valid_id
+
 __all__ = [
     "CATEGORIES",
     "HIGH_RISK_CATEGORIES",
@@ -26,12 +28,14 @@ __all__ = [
     "RedactionPolicy",
     "RedactionResult",
     "ScrubFailure",
+    "iter_high_risk_fields",
     "minimal_policy",
     "redact_record",
     "redact_text",
     "safe_text",
     "scan_high_risk",
     "scrub_guard",
+    "scrub_guard_payload",
 ]
 
 #: Every category this build can recognise.
@@ -52,6 +56,7 @@ CATEGORIES = frozenset({
     "ansi_escape",
     "control_char",
     "dropped_key",
+    "blocked_identifier",
 })
 
 #: Categories that must never survive a scrub: credentials of any kind.
@@ -148,18 +153,22 @@ _PRIVATE_KEY = re.compile(
     r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
     re.DOTALL,
 )
+# Leading boundary is ``(?<![A-Za-z0-9])`` rather than ``\b``: an underscore is a word
+# character, so ``\b`` lets ``att_ghp_…`` / ``run_sk-…`` — a credential with an id
+# prefix — walk straight past the filter. Underscore is a separator here, not a
+# shield.
 _KEYWORD_CREDENTIAL = re.compile(
-    r"""(?i)\b(bearer|token|api[_-]?key|apikey|secret|password|passwd|authorization)\b"""
+    r"""(?i)(?<![A-Za-z0-9])(bearer|token|api[_-]?key|apikey|secret|password|passwd|authorization)\b"""
     r"""(\s*[:=]\s*)(['"]?)([A-Za-z0-9._+/=~-]{8,})(['"]?)"""
 )
 # ``Authorization: Bearer <token>`` / ``bearer <token>`` — the scheme carries the
 # credential on its own, with a space rather than a colon.
-_BEARER_SCHEME = re.compile(r"(?i)\b(bearer)\s+([A-Za-z0-9._+=/-]{8,})")
-_OPENAI = re.compile(r"\bsk-[A-Za-z0-9_-]{12,}")
-_GITHUB = re.compile(r"\b(?:gh[pousr]|github_pat)_[A-Za-z0-9_]{12,}")
-_AWS = re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{12,}")
-_SLACK = re.compile(r"\bxox[abpsr]-[A-Za-z0-9-]{8,}")
-_JWT = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}")
+_BEARER_SCHEME = re.compile(r"(?i)(?<![A-Za-z0-9])(bearer)\s+([A-Za-z0-9._+=/-]{8,})")
+_OPENAI = re.compile(r"(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{12,}")
+_GITHUB = re.compile(r"(?<![A-Za-z0-9])(?:gh[pousr]|github_pat)_[A-Za-z0-9_]{12,}")
+_AWS = re.compile(r"(?<![A-Za-z0-9])(?:AKIA|ASIA)[0-9A-Z]{12,}")
+_SLACK = re.compile(r"(?<![A-Za-z0-9])xox[abpsr]-[A-Za-z0-9-]{8,}")
+_JWT = re.compile(r"(?<![A-Za-z0-9])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}")
 _EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+\b")
 # Bounded by non-word characters on both sides: a digit run *inside* an identifier
 # (a hex event id, a uuid, a digest) is not a card number, and rewriting it would
@@ -182,16 +191,21 @@ _SENSITIVE_KEY_RE = re.compile(
     )$"""
 )
 
-#: Fields whose value is an *identifier*: a bounded token validated by the schema,
-#: used to link evidence. Redacting one would corrupt linkage (an imported event id
-#: that no longer matches its parents is worse than useless), and the schema's id
-#: shape already excludes paths, whitespace and credentials.
+#: Fields whose value is an *identifier*: a bounded token used to link evidence.
+#: Being identifier-shaped is NOT a security property — a credential can be written
+#: in printable ID syntax — so these values are **checked**, not exempted.
+#: Only an actual id-shaped (or digest-shaped) value that carries no high-risk
+#: pattern passes through untouched; anything else is a sensitive value in an id
+#: field and is refused by the store rather than silently rewritten.
 _IDENTIFIER_KEYS = frozenset({
     "event_id", "attempt_id", "span_id", "run_id", "trace_id", "parent_attempt_id",
-    "causal_parents", "evidence_ref", "arguments_ref", "journal_id", "gap_id",
-    "snapshot_sha256", "ref", "trace_ref", "run_ref", "event_ref", "attempt_ref",
-    "parent_ref", "source_ref", "sha256", "content", "files",
+    "causal_parents", "evidence_ref", "arguments_ref", "journal_id",
+    "ref", "source_ref", "run_ref", "event_ref", "attempt_ref", "parent_ref", "sha256",
 })
+#: A schema-validated digest map: only digest-grammar values are exempt inside it.
+#: There is deliberately no exemption for generic ``content``/``files`` keys
+#: elsewhere in a record.
+_DIGEST_MAP_KEYS = frozenset({"private_digests"})
 
 
 def _keyword_replace(match: re.Match[str]) -> str:
@@ -266,9 +280,33 @@ def redact_record(
     Sensitive *keys* are replaced wholesale: a raw request body, approval body,
     provider header map or reasoning delta is never retained in redacted form,
     because the interesting content is the whole value, not a token inside it.
+
+    Identifier and digest fields are *checked*, not exempted: a value that matches a
+    high-risk pattern is redacted here **and** counted under ``blocked_identifier``
+    so the caller refuses the import instead of persisting a silently rewritten id.
     """
     policy = policy or minimal_policy()
     counts = RedactionCounts(stage=stage)
+
+    def _redacted_text(value: str) -> str:
+        result = redact_text(value, policy)
+        counts.merge(result.counts)
+        return result.text
+
+    def walk_identifiers(value: Any) -> Any:
+        """Identifier/digest values: pass only genuine, non-sensitive tokens."""
+        if isinstance(value, str):
+            if scan_high_risk(value, policy):
+                counts.bump("blocked_identifier")
+                return _redacted_text(value)
+            if is_valid_id(value) or is_digest_value(value):
+                return value
+            return _redacted_text(value)
+        if isinstance(value, (list, tuple)):
+            return [walk_identifiers(item) for item in value]
+        if isinstance(value, Mapping):
+            return {key: walk_identifiers(item) for key, item in value.items()}
+        return _redacted_text(str(value)) if isinstance(value, (int, float)) else value
 
     def walk(value: Any) -> Any:
         if isinstance(value, Mapping):
@@ -278,7 +316,8 @@ def redact_record(
                     out[key] = f"[redacted:key:{key}]"
                     counts.bump("dropped_key")
                     continue
-                if isinstance(key, str) and key.strip().lower() in _IDENTIFIER_KEYS:
+                lowered = key.strip().lower() if isinstance(key, str) else ""
+                if lowered in _IDENTIFIER_KEYS or lowered in _DIGEST_MAP_KEYS:
                     out[key] = walk_identifiers(item)
                     continue
                 out[key] = walk(item)
@@ -286,20 +325,45 @@ def redact_record(
         if isinstance(value, (list, tuple)):
             return [walk(item) for item in value]
         if isinstance(value, str):
-            result = redact_text(value, policy)
-            counts.merge(result.counts)
-            return result.text
-        return value
-
-    def walk_identifiers(value: Any) -> Any:
-        """Identifiers pass through unchanged (bounded tokens, not free text)."""
-        if isinstance(value, (list, tuple)):
-            return [walk_identifiers(item) for item in value]
-        if isinstance(value, Mapping):
-            return {key: walk_identifiers(item) for key, item in value.items()}
+            return _redacted_text(value)
         return value
 
     return walk(record), counts.finish()
+
+
+def iter_high_risk_fields(record: Any, policy: RedactionPolicy | None = None) -> list[tuple[str, list[str]]]:
+    """Walk a payload and report every string field containing a high-risk value.
+
+    Used by the store as a full-payload gate: nothing reaches the database, the WAL,
+    the journal or an error log until this returns empty.
+    """
+    hits: list[tuple[str, list[str]]] = []
+
+    def walk(value: Any, path: str) -> None:
+        if isinstance(value, Mapping):
+            for key, item in value.items():
+                walk(item, f"{path}.{key}" if path else str(key))
+        elif isinstance(value, (list, tuple)):
+            for index, item in enumerate(value):
+                walk(item, f"{path}[{index}]")
+        elif isinstance(value, str):
+            found = scan_high_risk(value, policy)
+            if found:
+                hits.append((path or "<root>", found))
+
+    walk(record, "")
+    return hits
+
+
+def scrub_guard_payload(record: Any, policy: RedactionPolicy | None = None) -> None:
+    """Refuse to persist a payload that still contains high-risk content anywhere."""
+    hits = iter_high_risk_fields(record, policy)
+    if hits:
+        detail = "; ".join(f"{path}: {', '.join(categories)}" for path, categories in hits[:5])
+        raise ScrubFailure(
+            "high-risk content survived redaction in the payload "
+            f"({detail}); refusing to persist or export"
+        )
 
 
 def _high_risk_patterns(policy: RedactionPolicy | None = None) -> list[tuple[str, re.Pattern[str]]]:

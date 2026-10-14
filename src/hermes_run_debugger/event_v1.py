@@ -263,6 +263,7 @@ class TraceEnvelope:
 
     def as_dict(self, *, include_private: bool = False) -> dict[str, Any]:
         out = {
+            "kind": "trace",
             "schema": SCHEMA_ID,
             "version": SCHEMA_VERSION,
             "trace_id": self.trace_id,

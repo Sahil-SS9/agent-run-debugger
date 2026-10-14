@@ -15,6 +15,7 @@ example:
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -62,26 +63,126 @@ def _load_host(monkeypatch, host_home):
     sys.path.insert(0, HOST_SRC)
     try:
         import hermes_cli.plugins as plugins_module
+    except ImportError as exc:  # BLOCKED, never green: a prerequisite is missing
+        pytest.fail(
+            f"BLOCKED: the pinned host could not be imported from {HOST_SRC} ({exc}). "
+            "Provision an interpreter that satisfies the target host's own dependency "
+            "declarations (the pinned host imports hermes_yaml → ruamel). See "
+            "scripts/host-test-env.sh and docs/compatibility.md; that provisioning needs "
+            "owner approval before it is run."
+        )
     finally:
         if sys.path and sys.path[0] == HOST_SRC:
             sys.path.pop(0)
 
-    # Prove the harness is the pinned checkout, not a fork's copy or a mixed tree.
+    assert_pure_host_tree(plugins_module)
+    monkeypatch.setenv("HERMES_HOME", str(host_home))
+    return plugins_module
+
+
+def _hermes_owned_top_level_names() -> set[str]:
+    """Every top-level module name the pinned checkout itself owns.
+
+    Derived from the tree rather than hardcoded: a hand-written allowlist
+    (``hermes_cli``/``agent``/``tools``/``plugins``) silently misses helpers such as
+    ``utils`` or ``hermes_yaml``, which is exactly how a mixed tree would pass.
+    """
+    root = Path(HOST_SRC)
+    owned: set[str] = set()
+    for entry in root.iterdir():
+        if entry.is_file() and entry.suffix == ".py":
+            owned.add(entry.stem)
+        elif entry.is_dir() and (entry / "__init__.py").is_file():
+            owned.add(entry.name)
+    assert {"hermes_cli", "hermes_yaml", "utils"} <= owned, sorted(owned)
+    return owned
+
+
+def assert_pure_host_tree(plugins_module) -> None:
+    """No Hermes-owned module may resolve outside the pinned checkout."""
+    pinned = Path(HOST_SRC).resolve()
     resolved = Path(plugins_module.__file__).resolve()
-    assert resolved.is_relative_to(Path(HOST_SRC).resolve()), (
+    assert resolved.is_relative_to(pinned), (
         f"hermes_cli.plugins resolved outside the pinned host checkout: {resolved}"
     )
+    owned = _hermes_owned_top_level_names()
     for name, module in list(sys.modules.items()):
         module_file = getattr(module, "__file__", None)
         if not module_file:
             continue
-        if name.split(".")[0] in {"hermes_cli", "hermes_constants", "agent", "tools", "plugins"}:
-            assert Path(module_file).resolve().is_relative_to(Path(HOST_SRC).resolve()), (
+        if name.split(".")[0] in owned:
+            assert Path(module_file).resolve().is_relative_to(pinned), (
                 f"host module {name} resolved outside the pinned checkout: {module_file}"
             )
 
-    monkeypatch.setenv("HERMES_HOME", str(host_home))
-    return plugins_module
+
+def test_source_purity_guard_rejects_a_module_from_another_tree(tmp_path, monkeypatch):
+    """Negative control: the guard must fail when a host-owned name comes from elsewhere."""
+    import types
+
+    sys.path.insert(0, HOST_SRC)
+    try:
+        import hermes_cli.plugins as plugins_module
+    finally:
+        if sys.path and sys.path[0] == HOST_SRC:
+            sys.path.pop(0)
+
+    impostor = types.ModuleType("hermes_yaml")
+    outside = tmp_path / "hermes_yaml.py"
+    outside.write_text("# impostor from another checkout\n", encoding="utf-8")
+    impostor.__file__ = str(outside)
+    monkeypatch.setitem(sys.modules, "hermes_yaml", impostor)
+    with pytest.raises(AssertionError) as exc:
+        assert_pure_host_tree(plugins_module)
+    assert "outside the pinned checkout" in str(exc.value)
+
+    # ...and the real host helper, once restored, is inside the pin.
+    monkeypatch.undo()
+    assert_pure_host_tree(plugins_module)
+
+
+def test_host_interpreter_identity_is_recorded(tmp_path, monkeypatch, host_home):
+    """Record the exact interpreter and where its dependencies come from.
+
+    A recorded host result is only reproducible if the interpreter, its version and
+    the origin of every dependency are named. `<host-deps-python>` is not an identity.
+    """
+    _load_host(monkeypatch, host_home)
+    import ruamel.yaml as ruamel_yaml
+    from hermes_yaml import __file__ as hermes_yaml_file  # ruamel-backed host helper
+
+    identity = {
+        "interpreter": sys.executable,
+        "version": sys.version.split()[0],
+        "platform": sys.platform,
+        "venv_prefix": sys.prefix,
+        "host_src": str(Path(HOST_SRC).resolve()),
+        "host_helper": str(Path(hermes_yaml_file).resolve()),
+        "third_party_origin": str(Path(ruamel_yaml.__file__).resolve()),
+    }
+    # Compare the venv root, not the interpreter binary: two uv-managed venvs share one
+    # base CPython, so `.resolve()` on their python executables collides and would make
+    # this guard fire on a perfectly good host environment.
+    plugin_venv_prefix = (REPO_ROOT / ".venv").resolve()
+    if Path(sys.prefix).resolve() == plugin_venv_prefix:
+        pytest.fail(
+            "BLOCKED: the host lane is running in the plugin's own venv, which does not carry "
+            "the target host's dependencies. Run it with an interpreter that does (see "
+            "scripts/host-test-env.sh and docs/compatibility.md)."
+        )
+    assert Path(hermes_yaml_file).resolve().is_relative_to(Path(HOST_SRC).resolve())
+    assert not Path(ruamel_yaml.__file__).resolve().is_relative_to(REPO_ROOT), (
+        "a third-party dependency resolved inside the plugin repository"
+    )
+
+    evidence_dir = os.environ.get("HOST_EVIDENCE_DIR")
+    if evidence_dir:
+        target = Path(evidence_dir)
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "host-interpreter-identity.json").write_text(
+            json.dumps(identity, indent=2), encoding="utf-8"
+        )
+    print("host interpreter identity:", json.dumps(identity))
 
 
 def test_plugin_registers_alone_on_a_real_host(monkeypatch, host_home, tmp_path):

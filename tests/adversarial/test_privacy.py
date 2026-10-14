@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import stat
+from pathlib import Path
 
 import pytest
 
@@ -37,6 +38,7 @@ HOME_PATH = "/home/kensei/private/api-keys.txt"
 ANSI = "\x1b[31mred text\x1b[0m"
 CTRL = "a\x00b\x07c"
 BEARER = "Authorization: Bearer 8f3ac21d9b7e4f603a5c"
+SK_TOKEN = "sk-abcdef0123456789abcdef"
 
 SEEDED = {
     "openai_key": OPENAI_KEY,
@@ -266,6 +268,125 @@ def test_store_round_trip_preserves_event_ids(tmp_path):
         run = store.load_run("r-priv")
     assert [event.event_id for event in run.events] == [event.event_id for event in trace.events]
     assert "[redacted" not in run.events[0].event_id
+
+
+# --------------------------------------------------------------------------
+# R1 regressions: credential-shaped values in identifier/reference fields must
+# not survive, and must be refused rather than silently rewritten (a silently
+# altered id breaks linkage, which is worse than a refusal).
+# --------------------------------------------------------------------------
+
+GH_TOKEN = "ghp_0123456789abcdefghijklmnopqrstuvwxyz"
+SK_KEY = "sk-A1b2C3d4E5f6G7h8I9j0K1l2"
+
+
+def write_trace_file(tmp_path, *, run_id="r-ids", event_id="evt_a1b2c3d4e5f6", attempt_id="att_0be0ef46",
+                     source_ref=None, evidence_ref="claude:request:r1", arguments_ref=None,
+                     private_digests=None, name="session.jsonl"):
+    """A valid, accepted event-v1 JSONL file (the real import path, not a fabricated result)."""
+    header = {
+        "kind": "trace", "schema": "hermes-run-debugger/trace", "version": 1,
+        "trace_id": "t-ids", "run_id": run_id, "importer": "test", "importer_version": "0.1.0",
+        "source_format": "event-v1", "source_scope": "explicit-selection",
+        "created_at": "2026-10-14T10:00:00Z",
+        "source": {"kind": "file", "ref": source_ref or ("sha256:" + "c" * 64), "name": name},
+        "redaction": {"policy": "minimal-metadata", "applied_count": 0},
+        "covered_kinds": ["tool_call"], "unsupported_kinds": [],
+        "completeness": {"status": "complete", "missing_kinds": [], "notes": []},
+    }
+    if private_digests is not None:
+        header["private_digests"] = private_digests
+    attempt = {
+        "kind": "attempt", "attempt_id": attempt_id, "run_id": run_id, "parent_attempt_id": None,
+        "model": "example-model", "provider": "example-provider", "role": "primary", "branch": "main",
+        "sequence": 0, "started_at": "2026-10-14T10:00:00Z", "ended_at": None,
+        "outcome": "failed", "unknowns": [],
+    }
+    event = {
+        "kind": "event", "event_id": event_id, "run_id": run_id, "attempt_id": attempt_id,
+        "span_id": None, "causal_parents": [], "source_sequence": 0,
+        "wall_time": "2026-10-14T10:00:01Z", "monotonic_ms": 1000,
+        "clock": {"source": "monotonic", "quality": "high"}, "event_kind": "tool_call",
+        "reported_status": "failed", "reported_error": "boom", "usage": {},
+        "evidence_ref": evidence_ref, "delivered_via": "import",
+        "semantic_provenance": "reported", "gaps": [], "contradictions": [], "name": "Bash",
+    }
+    if arguments_ref is not None:
+        event["arguments_ref"] = arguments_ref
+    path = tmp_path / name
+    path.write_text("".join(json.dumps(record) + "\n" for record in (header, attempt, event)), encoding="utf-8")
+    return path
+
+
+def _import_through_services(path, tmp_path, **kwargs):
+    from hermes_run_debugger.cli import Services
+
+    data_dir = tmp_path / "plugin-data"
+    with Services(data_dir=data_dir) as services:
+        return services.import_sources([path], **kwargs), data_dir
+
+
+def _files_under(directory):
+    return {item: item.read_bytes() for item in Path(directory).rglob("*") if item.is_file()}
+
+
+@pytest.mark.parametrize(
+    "kwargs, culprit",
+    [
+        ({"source_ref": GH_TOKEN}, GH_TOKEN),
+        ({"event_id": SK_KEY}, SK_KEY),
+        ({"attempt_id": "att_" + GH_TOKEN}, GH_TOKEN),
+        ({"run_id": "run_" + SK_TOKEN}, SK_TOKEN),
+        ({"evidence_ref": SK_KEY}, SK_KEY),
+        ({"arguments_ref": GH_TOKEN}, GH_TOKEN),
+        ({"private_digests": {"content": GH_TOKEN}}, GH_TOKEN),
+        ({"private_digests": {"files": [{"name": "a.jsonl", "sha256": SK_KEY}]}}, SK_KEY),
+    ],
+)
+def test_credential_shaped_identifiers_are_refused_and_never_persisted(tmp_path, kwargs, culprit):
+    """Real accepted-file import: a sensitive-shaped id/ref/digest must be refused."""
+    from hermes_run_debugger.import_v1 import ImportRefused
+
+    path = write_trace_file(tmp_path, **kwargs)
+    with pytest.raises(ImportRefused) as exc:
+        _import_through_services(path, tmp_path)
+    assert exc.value.kind == "privacy"
+    message = " ".join(exc.value.reasons)
+    assert culprit not in message, "the refusal must not echo a credential-shaped value back"
+    assert "identifier/reference field" in message or "digest" in message
+
+    for name, blob in _files_under(tmp_path / "plugin-data").items():
+        assert culprit.encode() not in blob, f"{name} holds the credential"
+
+
+def test_credential_in_a_free_text_field_is_redacted_not_refused(tmp_path):
+    """Non-identifier fields are redacted in place; the import still succeeds."""
+    path = write_trace_file(tmp_path)
+    text = path.read_text(encoding="utf-8").replace("boom", f"used {GH_TOKEN} in the command")
+    path.write_text(text, encoding="utf-8")
+
+    imported, data_dir = _import_through_services(path, tmp_path)
+    assert imported and imported[0]["redaction_applied"] >= 1
+    for name, blob in _files_under(data_dir).items():
+        assert GH_TOKEN.encode() not in blob, f"{name} holds the credential"
+
+
+def test_legitimate_ids_keep_their_linkage_through_the_store(tmp_path):
+    """The guard must not shred normal hex/uuid ids or parent links."""
+    from hermes_run_debugger.event_v1 import validate_trace_records
+
+    path = write_trace_file(tmp_path, event_id="evt_0123456789abcdef")
+    imported, data_dir = _import_through_services(path, tmp_path)
+    assert imported[0]["events"] == 1
+
+    with RunDebugStore(data_dir) as store:
+        run = store.load_run("r-ids")
+    assert run.events[0].event_id == "evt_0123456789abcdef"
+    assert run.events[0].attempt_id == "att_0be0ef46"
+    assert run.trace["source"]["ref"].startswith("sha256:")
+    assert "[redacted" not in json.dumps(run.trace)
+    assert validate_trace_records([run.trace])  # the stored envelope still validates
+
 
 
 def test_policy_is_configurable_and_count_only():

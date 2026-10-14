@@ -90,9 +90,56 @@ def test_actual_estimated_and_unknown_costs_stay_separate():
     assert cost["estimated_total"] == pytest.approx(2.0)
     assert cost["events_with_unknown_cost"] == 1
     assert cost["events_with_unknown_tokens"] == 0
-    assert cost["cost_kind"] == "actual"
+    # Both kinds present: the aggregate label must say so rather than saying "actual".
+    assert cost["cost_kind"] == "mixed"
     assert cost["price_source"] == "operator-price-table-v3"
     assert "money" in cost["note"] or "price source" in cost["note"]
+    assert cost["coverage"]["events_with_reported_cost"] == 2
+    assert cost["coverage"]["events"] == 3
+
+
+def test_partially_known_token_counts_stay_partial():
+    """Known output tokens must not turn unknown input tokens into zero."""
+    events = trace([ev("e1", 0, usage={"output_tokens": 7})]).events
+    cost = summarise_cost(events)
+    assert cost["reported_input_tokens"] is None
+    assert cost["reported_output_tokens"] == 7
+    assert cost["coverage"]["events_with_input_tokens"] == 0
+    assert cost["coverage"]["events_with_output_tokens"] == 1
+    assert "1 of 1" in cost["coverage"]["note"]
+
+
+def test_both_unknown_tokens_stay_null():
+    events = trace([ev("e1", 0, usage={})]).events
+    cost = summarise_cost(events)
+    assert cost["reported_input_tokens"] is None
+    assert cost["reported_output_tokens"] is None
+    assert cost["events_with_unknown_tokens"] == 1
+
+
+def test_measured_zero_is_preserved_as_a_measurement():
+    events = trace([ev("e1", 0, usage={"input_tokens": 0, "output_tokens": 0})]).events
+    cost = summarise_cost(events)
+    assert cost["reported_input_tokens"] == 0
+    assert cost["reported_output_tokens"] == 0
+    assert cost["coverage"]["events_with_input_tokens"] == 1
+    assert cost["events_with_unknown_tokens"] == 0
+
+
+def test_mixed_known_and_unknown_reports_a_labelled_subtotal():
+    events = trace([
+        ev("e1", 0, usage={"input_tokens": 100, "output_tokens": 10}),
+        ev("e2", 1, usage={"output_tokens": 5}),
+        ev("e3", 2, usage={}),
+    ]).events
+    cost = summarise_cost(events)
+    assert cost["reported_input_tokens"] == 100
+    assert cost["reported_output_tokens"] == 15
+    assert cost["coverage"]["events"] == 3
+    assert cost["coverage"]["events_with_input_tokens"] == 1
+    assert cost["coverage"]["events_with_output_tokens"] == 2
+    assert "1 of 3" in cost["coverage"]["note"] and "2 of 3" in cost["coverage"]["note"]
+    assert cost["events_with_unknown_tokens"] == 1
 
 
 def test_unknown_billing_is_never_zero():
@@ -104,6 +151,18 @@ def test_unknown_billing_is_never_zero():
     assert cost["estimated_total"] is None
     assert cost["cost_kind"] == "unknown"
     assert cost["reported_total"] != 0
+
+
+def test_report_marks_unknown_metrics_as_unknown_not_zero():
+    from hermes_run_debugger.report import build_report, render_markdown
+
+    events = trace([ev("e1", 0, usage={"output_tokens": 7})]).events
+    report = build_report(run_id="r-cc", events=events, trace={"trace_id": "t-cc"})
+    markdown = render_markdown(report)
+    assert "reported total: unknown" in markdown
+    assert "output tokens reported for 1 of 1 events" in markdown
+    assert "input tokens reported for 0 of 1 events" in markdown
+    assert "0 tokens" not in markdown.replace("0 of 1", "")
 
 
 def test_claude_token_totals_reconcile_with_an_independent_oracle(tmp_path):

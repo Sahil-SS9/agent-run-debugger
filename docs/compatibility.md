@@ -6,10 +6,11 @@ Retrieval date for every host fact below: **2026-10-14**.
 
 | Fact | Value |
 |---|---|
-| Host source | `NousResearch/hermes-agent` @ `0e427d788d253630d38a3a51cd76849e73cd6925` |
+| Host source | `NousResearch/hermes-agent` @ `0e427d788d253630d38a3a51cd76849e73cd6925`, extracted read-only via `git archive` and verified byte-identical (blob hash `a652179c…` for `hermes_cli/plugins.py`) |
 | Python floor declared by host | `>=3.11,<3.15` (its `pyproject.toml`), while its own `[project].version` is `0.0.0` — the version value is not used to infer a floor |
-| Local verification method | `git archive 0e427d…` extracted read-only into a scratch checkout; `hermes_cli/plugins.py` blob hash compared against the pinned Git object (`a652179c…` — identical) |
-| Runtime used for the host tests | the pinned checkout's code on `PYTHONPATH`, executed by a Python 3.14.7 interpreter that carries the host's third-party dependencies |
+| Host-lane interpreter | recorded per run: `tests/host` writes `host-interpreter-identity.json` (interpreter path, version, platform, host source, host-helper path, third-party origin) into `HOST_EVIDENCE_DIR`, and the gate prints it. A run in the plugin venv is a **BLOCKED** result, asserted as such |
+| Host dependency provisioning | `scripts/host-test-env.sh` — installs the pinned host's own declared dependencies into a throwaway venv. It installs packages, so it runs only with owner approval |
+| Gate semantics | `scripts/checks.sh` requires `HERMES_HOST_SRC` **and** `HERMES_TEST_PYTHON`. Missing prerequisites exit non-zero with `BLOCKED`; `ALLOW_SKIP_HOST=1` prints `UNVERIFIED` and cannot satisfy a release gate. Failures are never swallowed |
 
 ## Plugin contract, verified against that source
 
@@ -50,25 +51,38 @@ Retrieval date for every host fact below: **2026-10-14**.
 `tests/host/test_install_alone.py` (skipped unless `HERMES_HOST_SRC` is set)
 loads the pinned host's own `PluginManager` under a disposable `HERMES_HOME` and:
 
-1. asserts every host module it imports resolves **inside the pinned checkout**
-   (a fork's module silently standing in for the target is how a plugin passes
-   locally and fails for a reviewer);
-2. asserts the plugin is discovered, loaded with `error is None`, and enabled;
-3. asserts the five tools, the slash command and the CLI subcommand are registered
+1. builds the set of top-level module names the pinned checkout **itself owns** (every
+   top-level `.py` stem and every package directory) and asserts that no loaded module
+   under those names resolves outside the pinned checkout — a hand-written allowlist
+   would silently miss helpers such as `utils` or `hermes_yaml`;
+2. has a **negative control** that injects an outside-pin `hermes_yaml` into
+   `sys.modules` and asserts the guard fires, so the guard is proven rather than
+   assumed;
+3. records the interpreter identity and dependency origins (above): third-party
+   packages must resolve from the interpreter's own site-packages, never from the
+   plugin repository;
+4. asserts the plugin is discovered, loaded with `error is None`, and enabled;
+5. asserts the five tools, the slash command and the CLI subcommand are registered
    and that `verify` is untouched;
-4. asserts **no hook was registered**;
-5. asserts the data directory lands under the disposable home and that no store is
+6. asserts **no hook was registered**;
+7. asserts the data directory lands under the disposable home and that no store is
    opened at registration time;
-6. exercises a real tool round-trip through the host's `tools.registry`:
+8. exercises a real tool round-trip through the host's `tools.registry`:
    `rundebug_import` → `rundebug_timeline` → `rundebug_explain` → `rundebug_replay`.
+
+What this does **not** prove: real slash-command, CLI-parser or gateway dispatch. The
+registry round-trip exercises the tool call path end to end; the slash/CLI surfaces are
+covered by unit-level service tests, and a live dispatch test needs an installed profile
+(an owner gate).
 
 ## Known limits of this compatibility claim
 
 - Verified on **Linux** only. No macOS or Windows native run is claimed.
 - Verified against **one pinned host revision**. Drift invalidates assumptions:
   re-pin and re-run the host tests rather than editing identifiers to fit.
-- The host test needs an interpreter that carries the host's third-party
-  dependencies; it is skipped, not faked, when `HERMES_HOST_SRC` is absent.
+- The host lane needs an interpreter that carries the host's third-party
+  dependencies. When it does not, the lane reports **BLOCKED** and fails the gate —
+  it never skips green and never claims coverage it did not achieve.
 - Surfaces not implemented in this build (capture, selected-session live read,
   model narration, sandboxed experiments) make **no** compatibility claim. Their
   settings are refused by name rather than ignored — see `docs/status.md`.

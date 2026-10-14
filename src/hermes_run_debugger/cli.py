@@ -21,6 +21,7 @@ from . import __version__
 from .diagnose import diagnose
 from .import_v1 import ImportRefused, import_trace
 from .jsonio import InputLimitExceeded
+from .redact import ScrubFailure
 from .replay import replay_events
 from .settings import Settings
 from .store import RunDebugStore
@@ -108,6 +109,17 @@ class Services:
         if not paths:
             raise ImportRefused("empty-selection", ["no source file was selected"])
         partial = self.settings.allow_partial if allow_partial is None else allow_partial
+
+        try:
+            return self._import_sources(paths, fmt=fmt, partial=partial)
+        except ScrubFailure as exc:
+            # A privacy refusal is a first-class refusal, not a crash: the surfaces
+            # report it with a named kind and nothing was persisted.
+            raise ImportRefused("privacy", [str(exc)]) from exc
+
+    def _import_sources(
+        self, paths: Sequence[str | Path], *, fmt: str | None, partial: bool
+    ) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
 
         if fmt == "claude" or (fmt is None and len(paths) > 1):

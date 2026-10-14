@@ -34,24 +34,31 @@ IPv4 addresses; ANSI escape sequences and control characters.
 
 - Unknown or invented credential formats, secrets split across fields, encoded or
   reversed payloads, and secrets inside binary blobs are **not** detected.
-- **Identifier fields are passed through unchanged.** Event, attempt, span, run and
-  reference ids are bounded, schema-validated tokens used to link evidence;
-  rewriting them would corrupt linkage (an id that no longer matches its parents is
-  worse than useless). A credential placed in an id-shaped field would therefore
-  not be caught by this filter.
-- A standalone long digit run in free text is treated as card-like. That is
-  deliberate over-redaction, and it is why identifiers are protected by *field
-  name* rather than by pattern.
+- **Identifier fields are value-checked, not exempted.** Event, attempt, span, run and
+  reference ids are bounded tokens used to link evidence, so they are *not* rewritten
+  silently — but being id-shaped is not a security property (a credential is printable).
+  A sensitive-shaped value in an id, reference or digest field **refuses the whole
+  source**: nothing is persisted, and no identifier is quietly altered. Refusal
+  messages name a field *position* and never echo the value.
+- Digest-shaped fields (`private_digests`, `sha256`) accept **digest grammar only**
+  (bare hex, `sha256:…` or `redacted-sha256:…`). Anything else there — including a
+  credential dressed as a digest — refuses the source, because it means the trace is
+  not the shape it claims to be.
+- A standalone long digit run in free text is treated as card-like. That is deliberate
+  over-redaction, and it is why identifiers are protected by *field name plus value
+  check* rather than by pattern alone.
 - A clean report means "no known shape matched", never "nothing sensitive was
   captured". `RedactionPolicy.limitations()` returns exactly this list at runtime.
 
 ## Second-stage guard
 
-`scrub_guard()` re-scans high-risk categories before persistence and again before
-export, and raises rather than publishing. The guard's pattern set is built from
-the **default** policy, so a policy that disables a category cannot disable the
-guard with it: a misconfigured policy still cannot silently persist a credential.
-A refused import leaves no run row and no file containing the value.
+`scrub_guard_payload()` walks the **entire** redacted trace, attempt, event, gap and
+source payload — every string, at any depth — and refuses to persist or export if any
+high-risk value survives. It runs before the database, the WAL, the journal and any log
+write, and its pattern set is built from the **default** policy, so a policy that
+disables a category cannot disable the guard with it. The snapshot identity written to
+the journal and revision columns is value-checked too. A refused import leaves no run
+row and no file containing the value.
 
 ## Exports and sharing
 

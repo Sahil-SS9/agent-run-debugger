@@ -64,55 +64,76 @@ def _default_ref(kind: str, raw_id: str) -> str:
 def summarise_cost(events: Sequence[Any]) -> dict[str, Any]:
     """Cost v1 summary: actual, estimated and unknown kept strictly separate.
 
+    Knownness is tracked **per metric**, not per record: one event reporting output
+    tokens must not turn another field's unknown input tokens into zero. A field
+    nobody reported stays ``None``; a measured ``0`` is a real measurement and is
+    preserved as ``0``. A known subtotal is labelled with its coverage rather than
+    presented as a complete total.
+
     Imported token counts are the source's own reported figures. They are never
-    turned into money without a named price source, and an unknown value is
-    ``None`` — never ``0``.
+    turned into money without a named price source.
     """
-    reported_costs: list[float] = []
+    events_total = 0
+    input_values: list[int] = []
+    output_values: list[int] = []
+    actual_costs: list[float] = []
     estimated_costs: list[float] = []
     price_source: str | None = None
     unknown_cost = 0
     unknown_tokens = 0
-    reported_input = 0
-    reported_output = 0
 
     for event in events:
         usage = getattr(event, "usage", None)
         if usage is None:
             continue
-        has_tokens = usage.input_tokens is not None or usage.output_tokens is not None
+        events_total += 1
+        if usage.input_tokens is not None:
+            input_values.append(int(usage.input_tokens))
+        if usage.output_tokens is not None:
+            output_values.append(int(usage.output_tokens))
+        if usage.input_tokens is None and usage.output_tokens is None:
+            unknown_tokens += 1
         if usage.cost is None:
-            if has_tokens:
-                unknown_cost += 1
-            else:
-                unknown_tokens += 1
+            unknown_cost += 1
         elif usage.cost_kind == "estimated":
             estimated_costs.append(float(usage.cost))
             if price_source is None and usage.price_source:
                 price_source = usage.price_source
         else:
-            reported_costs.append(float(usage.cost))
-        reported_input += int(usage.input_tokens or 0)
-        reported_output += int(usage.output_tokens or 0)
+            actual_costs.append(float(usage.cost))
 
-    if not (reported_costs or estimated_costs):
+    if not (actual_costs or estimated_costs):
         cost_kind = "unknown"
-    elif reported_costs and estimated_costs:
+    elif actual_costs and estimated_costs:
+        cost_kind = "mixed"
+    elif actual_costs:
         cost_kind = "actual"
-    elif estimated_costs:
-        cost_kind = "estimated"
     else:
-        cost_kind = "actual"
+        cost_kind = "estimated"
+
+    coverage = {
+        "events": events_total,
+        "events_with_input_tokens": len(input_values),
+        "events_with_output_tokens": len(output_values),
+        "events_with_reported_cost": len(actual_costs) + len(estimated_costs),
+        "events_with_unknown_cost": unknown_cost,
+        "note": (
+            f"input tokens reported for {len(input_values)} of {events_total} events; "
+            f"output tokens reported for {len(output_values)} of {events_total} events; a known "
+            "subtotal is not a complete total, and a field nobody reported stays unknown"
+        ),
+    }
 
     return {
-        "reported_total": sum(reported_costs) if reported_costs else None,
+        "reported_total": sum(actual_costs) if actual_costs else None,
         "estimated_total": sum(estimated_costs) if estimated_costs else None,
         "cost_kind": cost_kind,
         "price_source": price_source,
         "events_with_unknown_cost": unknown_cost,
         "events_with_unknown_tokens": unknown_tokens,
-        "reported_input_tokens": reported_input if (reported_input or reported_output) else None,
-        "reported_output_tokens": reported_output if (reported_input or reported_output) else None,
+        "reported_input_tokens": sum(input_values) if input_values else None,
+        "reported_output_tokens": sum(output_values) if output_values else None,
+        "coverage": coverage,
         "note": (
             "reported usage only; unknown values stay null and reported tokens are never "
             "converted into money without a named price source"
@@ -143,8 +164,6 @@ def build_report(
     provenance: dict[str, int] = {}
     failures = 0
     interruptions = 0
-    unknown_cost_events = 0
-    unknown_token_events = 0
 
     timeline: list[dict[str, Any]] = []
     for event in events:
@@ -171,9 +190,6 @@ def build_report(
         })
 
     cost = summarise_cost(events)
-    unknown_cost_events = cost["events_with_unknown_cost"]
-    unknown_token_events = cost["events_with_unknown_tokens"]
-    del unknown_cost_events, unknown_token_events
 
     return {
         "schema": REPORT_SCHEMA_ID,
@@ -237,6 +253,11 @@ def _md_cell(value: Any) -> str:
     return text.replace("|", "\\|").replace("`", "'")
 
 
+def _md_value(value: Any) -> str:
+    """Render a possibly-unknown value: ``None`` is unknown, never 0."""
+    return "unknown" if value is None else _md_cell(value)
+
+
 def render_markdown(report: Mapping[str, Any]) -> str:
     run = report["run"]
     counts = report["counts"]
@@ -259,9 +280,18 @@ def render_markdown(report: Mapping[str, Any]) -> str:
     lines.append("")
     lines.append("## Cost (reported usage only)")
     lines.append("")
-    lines.append(f"- reported total: {cost['reported_total']}")
-    lines.append(f"- estimated total: {cost['estimated_total']}")
-    lines.append(f"- cost kind: {cost['cost_kind']}")
+    lines.append(f"- reported total: {_md_value(cost['reported_total'])}")
+    lines.append(f"- estimated total: {_md_value(cost['estimated_total'])}")
+    lines.append(f"- cost kind: {_md_cell(cost['cost_kind'])}")
+    coverage = cost.get("coverage") or {}
+    if coverage:
+        total = coverage.get("events", 0)
+        lines.append(
+            f"- input tokens reported for {coverage.get('events_with_input_tokens', 0)} of {total} events"
+        )
+        lines.append(
+            f"- output tokens reported for {coverage.get('events_with_output_tokens', 0)} of {total} events"
+        )
     lines.append(f"- events with unknown cost: {cost['events_with_unknown_cost']}")
     lines.append(f"- note: {_md_cell(cost['note'])}")
     lines.append("")
@@ -360,9 +390,18 @@ def render_html(report: Mapping[str, Any], *, title: str = "Agent run report") -
         "<li>provenance: " + ", ".join(f"{esc(k)}={esc(str(v))}" for k, v in report["provenance"].items()) + "</li>",
         "</ul>",
         "<h2>Cost (reported usage only)</h2><ul>",
-        f"<li>reported total: {esc(str(report['cost']['reported_total']))}</li>",
-        f"<li>estimated total: {esc(str(report['cost']['estimated_total']))}</li>",
+        "<li>reported total: "
+        f"{esc('unknown' if report['cost']['reported_total'] is None else str(report['cost']['reported_total']))}</li>",
+        "<li>estimated total: "
+        f"{esc('unknown' if report['cost']['estimated_total'] is None else str(report['cost']['estimated_total']))}"
+        "</li>",
         f"<li>cost kind: {esc(report['cost']['cost_kind'])}</li>",
+        "<li>input tokens reported for "
+        f"{esc(str((report['cost'].get('coverage') or {}).get('events_with_input_tokens', 0)))} of "
+        f"{esc(str((report['cost'].get('coverage') or {}).get('events', 0)))} events</li>",
+        "<li>output tokens reported for "
+        f"{esc(str((report['cost'].get('coverage') or {}).get('events_with_output_tokens', 0)))} of "
+        f"{esc(str((report['cost'].get('coverage') or {}).get('events', 0)))} events</li>",
         f"<li>events with unknown cost: {esc(str(report['cost']['events_with_unknown_cost']))}</li>",
         f"<li>{esc(report['cost']['note'])}</li>",
         "</ul>",
