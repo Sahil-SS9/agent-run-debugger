@@ -10,7 +10,7 @@ Retrieval date for every host fact below: **2026-10-14**.
 | Python floor declared by host | `>=3.11,<3.15` (its `pyproject.toml`), while its own `[project].version` is `0.0.0` — the version value is not used to infer a floor |
 | Host-lane interpreter | recorded per run: `tests/host` writes `host-interpreter-identity.json` (interpreter path, version, platform, host source, host-helper path, third-party origin) into `HOST_EVIDENCE_DIR`, and the gate prints it. A run in the plugin venv is a **BLOCKED** result, asserted as such |
 | Host dependency provisioning | `scripts/host-test-env.sh` — installs the pinned host's own declared dependencies into a throwaway venv. It installs packages, so it runs only with owner approval |
-| Gate semantics | `scripts/checks.sh` requires `HERMES_HOST_SRC` **and** `HERMES_TEST_PYTHON`. Missing prerequisites exit non-zero with `BLOCKED`; `ALLOW_SKIP_HOST=1` prints `UNVERIFIED` and cannot satisfy a release gate. Failures are never swallowed |
+| Gate semantics | `scripts/checks.sh` runs a **fail-fast preflight**: `HERMES_HOST_SRC` and `HERMES_TEST_PYTHON` must both be set, point at a host checkout and an executable interpreter, and that interpreter must be able to import the pinned host's own dependencies — otherwise the gate exits non-zero with `BLOCKED` before any heavy work (no `uv sync`, no build), so it is safe to use as a missing-environment probe. `ALLOW_SKIP_HOST=1` prints `UNVERIFIED` and cannot satisfy a release gate. Failures are never swallowed |
 
 ## Plugin contract, verified against that source
 

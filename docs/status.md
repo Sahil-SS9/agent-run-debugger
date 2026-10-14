@@ -91,6 +91,18 @@ The review of `e7abc33` found, correctly:
    `tests/platform/test_matrix.py` existed and passed, and the retention deviation had no
    owner sign-off. Both are corrected above; the superseded statements are kept in the
    history below rather than edited away.
+5. **F1 refusal privacy (fixed, recheck of `2a8901c`).** Ordinary schema/enum/time
+   refusals still echoed the offending value — including credential-shaped strings — on
+   every public path (`import`, CLI, slash, tool), and the `raise … from exc` chain could
+   reintroduce it behind a safe-looking message. Fixed at the source: static reasons with
+   allowed choices instead of value echoes, input-derived field names sanitised and
+   bounded, and `sanitise_message()` applied in `TraceValidationError`, `ImportRefused`,
+   `InputError`/`MalformedRecord`/`InputLimitExceeded`, `StoreError` and the CLI/slash/tool
+   refusal paths. 13 focused regressions assert the seed is absent from the message, every
+   reason, the whole cause chain, stdout, the slash reply and the tool result, while the
+   field name and allowed choices stay truthful and a refused import persists no rows.
+   The gate's preflight was also moved ahead of `uv sync`/build so a missing or
+   under-provisioned host environment fails fast instead of after heavy work.
 
 Earlier form of the two corrected statements, retained verbatim:
 `"tests/unit, tests/adversarial, tests/integration, tests/host. No tests/platform exists

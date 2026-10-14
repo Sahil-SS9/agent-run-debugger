@@ -60,6 +60,22 @@ disables a category cannot disable the guard with it. The snapshot identity writ
 the journal and revision columns is value-checked too. A refused import leaves no run
 row and no file containing the value.
 
+## Refusals are sanitised too (error text is a leak path)
+
+A validation message that quotes the offending value republishes it — into a terminal,
+a slash reply, a tool result, a caller's log or an exception cause chain. So:
+
+- Ordinary schema/enum/time/identifier refusals carry a **field position plus a static
+  reason and the allowed choices**, not the value. A malformed timestamp message says
+  what a timestamp must look like; it does not repeat what was sent.
+- Field names taken from the input are shown **sanitised** and bounded in number.
+- `sanitise_message()` is applied at the source: `TraceValidationError`,
+  `ImportRefused`, `InputError`/`MalformedRecord`/`InputLimitExceeded`, `StoreError` and
+  every CLI/slash/tool refusal path, so a `raise … from exc` chain cannot reintroduce a
+  raw value behind a safe top-level message.
+- Refusal text never echoes a credential-shaped identifier: it names a field position
+  (`event #2 (identifier/reference field)`) instead.
+
 ## Exports and sharing
 
 - `export` is **operator-CLI only**: no agent tool, no slash subcommand, no gateway
