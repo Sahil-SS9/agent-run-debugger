@@ -65,8 +65,11 @@ config_schema:
     description: Hard cap on bytes read from one selected trace file.
   import_max_line_bytes:
     type: int
-    default: 1048576
-    description: Hard cap on a single JSONL line.
+    default: 8388608
+    description: >-
+      Hard cap on a single JSONL line. 8 MiB by default: real Claude Code session files embed
+      prompt/attachment snapshots as single multi-megabyte lines, and a lower cap refuses the
+      whole file atomically.
   import_max_events:
     type: int
     default: 200000

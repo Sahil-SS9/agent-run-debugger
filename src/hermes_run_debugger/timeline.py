@@ -98,6 +98,9 @@ class Timeline:
     #: Attempt records (as dicts) so callers can reason about reported outcomes
     #: without re-reading the store.
     attempts: list[dict[str, Any]] = field(default_factory=list)
+    #: True when the source declares that result/error text was dropped under the active
+    #: retention policy, so a mechanism may be unnameable from this evidence.
+    text_dropped_by_policy: bool = False
 
     def entry(self, event_id: str) -> TimelineEntry | None:
         for item in self.entries:
@@ -250,6 +253,10 @@ def build_timeline(
     timeline = Timeline(run_id=result.trace.run_id if result.trace else "")
     timeline.gaps = list(result.gaps)
     timeline.attempts = [attempt.as_dict() for attempt in result.attempts]
+    if result.trace is not None:
+        timeline.text_dropped_by_policy = (
+            str(result.trace.redaction.get("retention_mode", "")).lower() == "metadata-only"
+        )
     timeline.notes.append(
         "an absent causal parent is shown as a gap; no edge is inferred for it"
     )

@@ -204,6 +204,10 @@ def _build_trace(
         "human_messages": 0,
         "tool_calls_started": 0,
         "tool_results": 0,
+        # Real files repeat a tool_use id (across requests and occasionally inside one
+        # request); both shapes are counted rather than silently deduplicated.
+        "duplicate_tool_use_across_requests": 0,
+        "duplicate_tool_blocks_skipped": 0,
         "subagent_files": sum(1 for source in sources if source.kind == "subagent"),
         "entries_read": sum(len(source.entries) for source in sources),
     }
@@ -271,6 +275,7 @@ def _build_trace(
 
     events: list[dict[str, Any]] = []
     seen_uuids: set[str] = set()
+    emitted_tool_ids: set[str] = set()
     sequence = 0
 
     def emit(payload: dict[str, Any]) -> str:
@@ -305,7 +310,7 @@ def _build_trace(
                 return
             parent_uuid = merged.get("parentUuid")
             parent = uuid_to_event.get(parent_uuid) or state_holder["last"]
-            event_id = stable_id("evt", run_id, attempt_id, "model_call", request_id)
+            event_id = stable_id("evt", run_id, attempt_id, "model_call", request_id, sequence)
             error_text = _text_of(merged.get("content"))[:MAX_RESULT_SUMMARY] \
                 if merged.get("isApiErrorMessage") else None
             emit({
@@ -334,7 +339,15 @@ def _build_trace(
             state_holder["last"] = event_id
 
             for tool in merged.get("tools", []):
-                tool_event_id = stable_id("evt", run_id, attempt_id, "tool_call", tool["id"])
+                # Real files reuse a tool_use id across requests, so uniqueness comes from the
+                # emitted sequence, not from the source id.
+                if tool["id"] in emitted_tool_ids:
+                    stats["duplicate_tool_use_across_requests"] += 1
+                else:
+                    emitted_tool_ids.add(tool["id"])
+                tool_event_id = stable_id(
+                    "evt", run_id, attempt_id, "tool_call", tool["id"], sequence
+                )
                 emit({
                     "kind": "event",
                     "event_id": tool_event_id,
@@ -412,6 +425,7 @@ def _build_trace(
                 for block in _content_blocks(entry):
                     if block.get("type") == "tool_use" and isinstance(block.get("id"), str):
                         if block["id"] in merged["seen_tool_ids"]:
+                            stats["duplicate_tool_blocks_skipped"] += 1
                             continue
                         merged["seen_tool_ids"].add(block["id"])
                         merged["tools"].append({
@@ -445,7 +459,9 @@ def _build_trace(
                         summary = ""
                         if retention_mode == "redacted-summary":
                             summary = _text_of(block.get("content"))[:MAX_RESULT_SUMMARY]
-                        event_id = stable_id("evt", run_id, attempt_id, "tool_result", tool_use_id)
+                        event_id = stable_id(
+                            "evt", run_id, attempt_id, "tool_result", tool_use_id, sequence
+                        )
                         emit({
                             "kind": "event",
                             "event_id": event_id,
@@ -476,7 +492,7 @@ def _build_trace(
                 # a plain human turn: a reference, never the prompt text
                 stats["human_messages"] += 1
                 parent = uuid_to_event.get(entry.get("parentUuid")) or state_holder["last"]
-                event_id = stable_id("evt", run_id, attempt_id, "note", str(entry_uuid or ""))
+                event_id = stable_id("evt", run_id, attempt_id, "note", str(entry_uuid or ""), sequence)
                 emit({
                     "kind": "event",
                     "event_id": event_id,
@@ -533,6 +549,11 @@ def _build_trace(
             f"{stats['records_merged_into_requests']} split assistant record(s) merged per request; "
             "the maximum reported output_tokens per request is kept"
         )
+    if retention_mode == "metadata-only":
+        notes.append(
+            "retention_mode=metadata-only: tool-result text was dropped at import, so a failure's "
+            "mechanism may not be nameable from this evidence"
+        )
     notes.append(
         "adapter semantics: prompt text and tool arguments are never retained (opaque references "
         "only); request-level usage is the source's own reported value"
@@ -555,7 +576,15 @@ def _build_trace(
             "ref": content_ref(digest_input),
             "name": sources[0].path.name if sources else "",
         },
-        "redaction": {"policy": "minimal-metadata", "applied_count": 0},
+        "redaction": {
+            "policy": "minimal-metadata",
+            "retention_mode": retention_mode,
+            "applied_count": 0,
+            "limitations": (
+                ["tool-result text is not retained under metadata-only retention"]
+                if retention_mode == "metadata-only" else []
+            ),
+        },
         "covered_kinds": covered or ["note"],
         "unsupported_kinds": [],
         "completeness": {

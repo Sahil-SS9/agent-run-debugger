@@ -564,6 +564,15 @@ def _later_success(events: Sequence[Event], failed: Event) -> bool:
 
 
 def _collect_missing_evidence(diagnosis: Diagnosis, timeline: Timeline) -> None:
+    if timeline.text_dropped_by_policy:
+        # Say it plainly: the reason no mechanism is offered is the retention policy, not a
+        # lack of care. Silence here would look like an unexplained gap.
+        diagnosis.missing_evidence.append(
+            "error and tool-result text was not retained under the active retention policy "
+            "(metadata-only), so the mechanism behind a failure cannot be named from this "
+            "evidence — re-import with a retention mode that keeps redacted summaries if the "
+            "mechanism matters more than minimisation"
+        )
     for gap in timeline.gaps:
         diagnosis.missing_evidence.append(
             f"gap ({gap.kind.replace('_', ' ')}): {safe_text(gap.detail)}"

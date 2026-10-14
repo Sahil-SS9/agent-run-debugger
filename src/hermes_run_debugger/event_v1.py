@@ -89,7 +89,7 @@ _TRACE_FIELDS = frozenset({
     "unsupported_kinds", "completeness", "private_digests",
 })
 _SOURCE_FIELDS = frozenset({"kind", "ref", "name"})
-_REDACTION_FIELDS = frozenset({"policy", "applied_count", "categories", "limitations"})
+_REDACTION_FIELDS = frozenset({"policy", "applied_count", "categories", "limitations", "retention_mode"})
 _COMPLETENESS_FIELDS = frozenset({
     "status", "missing_kinds", "notes", "source_limits", "truncation", "capture_windows",
 })
@@ -191,6 +191,7 @@ class Event:
 
     def as_dict(self) -> dict[str, Any]:
         return {
+            "kind": "event",
             "event_id": self.event_id,
             "run_id": self.run_id,
             "attempt_id": self.attempt_id,
@@ -231,6 +232,7 @@ class Attempt:
 
     def as_dict(self) -> dict[str, Any]:
         return {
+            "kind": "attempt",
             "attempt_id": self.attempt_id,
             "run_id": self.run_id,
             "parent_attempt_id": self.parent_attempt_id,

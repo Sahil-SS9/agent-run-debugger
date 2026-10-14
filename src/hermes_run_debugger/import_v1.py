@@ -124,7 +124,7 @@ def limits_from_settings(settings: Mapping[str, Any] | None = None) -> StreamLim
     settings = dict(settings or {})
     return StreamLimits(
         max_bytes=int(settings.get("import_max_bytes", 64 * 1024 * 1024)),
-        max_line_bytes=int(settings.get("import_max_line_bytes", 1024 * 1024)),
+        max_line_bytes=int(settings.get("import_max_line_bytes", 8 * 1024 * 1024)),
         max_events=int(settings.get("import_max_events", 200_000)),
         max_depth=int(settings.get("import_max_depth", 24)),
     )

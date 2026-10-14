@@ -45,6 +45,7 @@
           "additionalProperties": false,
           "properties": {
             "policy": { "type": "string" },
+            "retention_mode": { "type": "string", "description": "retention mode the importer was run under; 'metadata-only' means result/error text was dropped" },
             "applied_count": { "type": "integer", "minimum": 0 },
             "categories": { "type": "object" },
             "limitations": { "type": "array", "items": { "type": "string" } }

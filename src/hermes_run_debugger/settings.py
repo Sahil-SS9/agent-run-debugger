@@ -68,7 +68,7 @@ class Settings:
     llm_enabled: bool = False
     experiment_enabled: bool = False
     import_max_bytes: int = 64 * 1024 * 1024
-    import_max_line_bytes: int = 1024 * 1024
+    import_max_line_bytes: int = 8 * 1024 * 1024
     import_max_events: int = 200_000
     import_max_depth: int = 24
     allow_partial: bool = False
@@ -85,7 +85,7 @@ class Settings:
             llm_enabled=_as_bool(data.get("llm_enabled"), False),
             experiment_enabled=_as_bool(data.get("experiment_enabled"), False),
             import_max_bytes=_as_int(data.get("import_max_bytes"), 64 * 1024 * 1024),
-            import_max_line_bytes=_as_int(data.get("import_max_line_bytes"), 1024 * 1024),
+            import_max_line_bytes=_as_int(data.get("import_max_line_bytes"), 8 * 1024 * 1024),
             import_max_events=_as_int(data.get("import_max_events"), 200_000),
             import_max_depth=_as_int(data.get("import_max_depth"), 24),
             allow_partial=_as_bool(data.get("allow_partial"), False),

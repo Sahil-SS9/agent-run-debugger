@@ -242,3 +242,119 @@ def test_unknown_record_types_are_counted_not_guessed(tmp_path):
     assert imported.stats["unsupported_records"] == 1
     assert any("brand_new_record" in note for note in imported.notes)
     assert all(e.event_kind != "note" or e.event_id for e in imported.result.events)
+
+
+# --------------------------------------------------------------------------
+# Fix-pass regressions: real Claude Code files repeat tool ids across requests and
+# chain parentUuid forward; real transcripts hold multi-megabyte lines; and when the
+# retention policy drops text, the diagnosis must say so instead of going silent.
+# --------------------------------------------------------------------------
+
+
+def test_real_world_shape_repeated_tool_ids_and_forward_parents(tmp_path):
+    from hermes_run_debugger.event_v1 import validate_trace_records
+    from hermes_run_debugger.timeline import build_timeline
+
+    entries = [
+        {"type": "attachment", "uuid": "w1", "sessionId": "s1",
+         "attachment": {"type": "prompt_snapshot", "systemPrompt": ["wrapper record"]}},
+        {"type": "user", "uuid": "u1", "sessionId": "s1", "timestamp": "2026-10-14T10:00:00.000Z",
+         "message": {"role": "user", "content": "first task"}},
+        {"type": "assistant", "uuid": "a1", "parentUuid": "u1", "requestId": "r1", "sessionId": "s1",
+         "timestamp": "2026-10-14T10:00:01.000Z",
+         "message": {"id": "m1", "role": "assistant", "model": "claude-example",
+                     "content": [{"type": "tool_use", "id": "tu-shared", "name": "Bash", "input": {}}],
+                     "usage": {"input_tokens": 10, "output_tokens": 3}}},
+        {"type": "user", "uuid": "u2", "parentUuid": "a1", "sessionId": "s1",
+         "timestamp": "2026-10-14T10:00:02.000Z",
+         "message": {"role": "user", "content": [
+             {"type": "tool_result", "tool_use_id": "tu-shared", "is_error": True,
+              "content": [{"type": "text", "text": "requires approval"}]}]}},
+        # forward parentUuid: names a uuid that only appears later in the file
+        {"type": "assistant", "uuid": "a2", "parentUuid": "a3", "requestId": "r2", "sessionId": "s1",
+         "timestamp": "2026-10-14T10:00:03.000Z",
+         "message": {"id": "m2", "role": "assistant", "model": "claude-example",
+                     "content": [{"type": "tool_use", "id": "tu-shared", "name": "Bash", "input": {}}],
+                     "usage": {"input_tokens": 20, "output_tokens": 4}}},
+        {"type": "user", "uuid": "u3", "parentUuid": "a2", "sessionId": "s1",
+         "timestamp": "2026-10-14T10:00:04.000Z",
+         "message": {"role": "user", "content": [
+             {"type": "tool_result", "tool_use_id": "tu-shared", "is_error": False,
+              "content": [{"type": "text", "text": "ok"}]}]}},
+        {"type": "assistant", "uuid": "a3", "parentUuid": "u3", "requestId": "r3", "sessionId": "s1",
+         "timestamp": "2026-10-14T10:00:05.000Z",
+         "message": {"id": "m3", "role": "assistant", "model": "claude-example",
+                     "content": [{"type": "text", "text": "done"}],
+                     "usage": {"input_tokens": 30, "output_tokens": 2}}},
+    ]
+    path = write_jsonl(tmp_path / "real-shape.jsonl", entries)
+
+    imported = import_claude_trace([path], limits=StreamLimits())   # must not refuse
+    result = imported.result
+    ids = [event.event_id for event in result.events]
+    assert len(ids) == len(set(ids)), "event ids must be unique even when tool ids repeat"
+
+    records = [
+        result.trace.as_dict(),
+        *[attempt.as_dict() for attempt in result.attempts],
+        *[event.as_dict() for event in result.events],
+    ]
+    timeline = build_timeline(validate_trace_records(records))
+    assert timeline.quarantined == []
+    order = {entry.event_id: entry.order for entry in timeline.entries}
+    for event in result.events:
+        for parent in event.causal_parents:
+            assert order[parent] < order[event.event_id], "no forward parent links"
+
+    failed = [e for e in result.events if e.reported_status == "failed"]
+    assert len(failed) == 1
+    assert imported.stats["unsupported_records"] == 1
+    assert imported.stats["duplicate_tool_use_across_requests"] >= 1
+    assert len([e for e in result.events if e.event_kind == "tool_call"]) >= 2
+
+
+def test_oversized_single_line_is_accepted_under_default_limits(tmp_path):
+    from hermes_run_debugger.cli import Services
+    from hermes_run_debugger.settings import Settings
+
+    settings = Settings()
+    assert settings.import_max_line_bytes >= 8 * 1024 * 1024, settings.import_max_line_bytes
+
+    entries = [
+        {"type": "assistant", "uuid": "a1", "requestId": "r1", "sessionId": "s1",
+         "timestamp": "2026-10-14T10:00:01.000Z",
+         "message": {"id": "m1", "role": "assistant", "model": "claude-example",
+                     "content": [{"type": "text", "text": "x" * 1_200_000}],
+                     "usage": {"input_tokens": 10, "output_tokens": 3}}},
+    ]
+    path = write_jsonl(tmp_path / "huge-line.jsonl", entries)
+    with Services(data_dir=tmp_path / "store", settings=settings) as services:
+        imported = services.import_sources([path], fmt="claude")
+    assert imported[0]["events"] >= 1
+
+
+def test_retention_blindness_is_reported_as_missing_evidence(tmp_path):
+    from hermes_run_debugger.cli import Services
+    from hermes_run_debugger.settings import Settings
+
+    entries = [
+        {"type": "user", "uuid": "u1", "sessionId": "s1", "timestamp": "2026-10-14T10:00:00.000Z",
+         "message": {"role": "user", "content": "run the tests"}},
+        {"type": "assistant", "uuid": "a1", "parentUuid": "u1", "requestId": "r1", "sessionId": "s1",
+         "timestamp": "2026-10-14T10:00:01.000Z",
+         "message": {"id": "m1", "role": "assistant", "model": "claude-example",
+                     "content": [{"type": "tool_use", "id": "tu1", "name": "Bash", "input": {}}],
+                     "usage": {"input_tokens": 10, "output_tokens": 3}}},
+        {"type": "user", "uuid": "u2", "parentUuid": "a1", "sessionId": "s1",
+         "timestamp": "2026-10-14T10:00:02.000Z",
+         "message": {"role": "user", "content": [
+             {"type": "tool_result", "tool_use_id": "tu1", "is_error": True,
+              "content": [{"type": "text", "text": "assertion failed in test_widget"}]}]}},
+    ]
+    path = write_jsonl(tmp_path / "blind.jsonl", entries)
+    with Services(data_dir=tmp_path / "store", settings=Settings(retention_mode="metadata-only")) as services:
+        run_id = services.import_sources([path], fmt="claude")[0]["run_id"]
+        explanation = services.explain_text(run_id)
+    lowered = explanation.lower()
+    assert "was not retained" in lowered
+    assert "cannot be named" in lowered
