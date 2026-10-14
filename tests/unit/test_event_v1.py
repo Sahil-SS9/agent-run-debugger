@@ -151,7 +151,7 @@ def test_missing_parent_is_a_gap_not_an_inferred_edge():
         ]
     )
     assert out.ok, "a legitimately missing parent must not refuse the import"
-    assert out.events[0].causal_parents == ["e-missing"]
+    assert out.events[0].causal_parents == ("e-missing",)
     gaps = [g for g in out.gaps if g.event_id == "e-1"]
     assert gaps and gaps[0].kind == "missing_parent"
     assert gaps[0].parent_id == "e-missing"
