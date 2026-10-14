@@ -1,0 +1,81 @@
+name: agent-run-debugger
+version: 0.1.0
+description: >-
+  Local-first evidence debugger for failed, stalled or expensive agent runs.
+  Imports an explicitly selected trace, reconstructs an ordered timeline,
+  separates observed failures from hypotheses, shows missing evidence and
+  replays the recorded timeline without executing anything.
+author: Sahil Saghir
+license: Apache-2.0
+homepage: https://github.com/Sahil-SS9/hermes-agent-run-debugger
+manifest_version: 2
+kind: standalone
+
+# v1 has no capture lane: this plugin registers NO hooks. Default observation
+# capture is a later, separately gated lane (see docs/status.md), and the
+# pre_tool_call hook is fail-closed in the host, so an observer there can block
+# the user's agent.
+provides_tools:
+  - rundebug_import
+  - rundebug_timeline
+  - rundebug_explain
+  - rundebug_replay
+  - rundebug_status
+provides_hooks: []
+provides_middleware: []
+
+# No environment variables are read by this plugin.
+requires_env: []
+
+# No privileged capability is required or declared: ordinary tool/command
+# registration only. `export` is operator-CLI-only (no tool, no slash, no
+# gateway route).
+capabilities: []
+
+tags:
+  - debugging
+  - observability
+  - offline
+  - local-first
+
+config_schema:
+  capture_enabled:
+    type: bool
+    default: false
+    description: Reserved for the separately gated native capture lane. Unsupported in v1 (refused, never silently ignored).
+  live_read_enabled:
+    type: bool
+    default: false
+    description: Reserved for the separately gated selected-session read lane. Unsupported in v1.
+  llm_enabled:
+    type: bool
+    default: false
+    description: Reserved for the optional model-narration lane (bounded, redacted egress). Unsupported in v1.
+  experiment_enabled:
+    type: bool
+    default: false
+    description: Reserved for the independently gated sandboxed experiment lane. Unsupported in v1.
+  import_max_bytes:
+    type: int
+    default: 67108864
+    description: Hard cap on bytes read from one selected trace file.
+  import_max_line_bytes:
+    type: int
+    default: 1048576
+    description: Hard cap on a single JSONL line.
+  import_max_events:
+    type: int
+    default: 200000
+    description: Hard cap on records accepted from one selected trace.
+  import_max_depth:
+    type: int
+    default: 24
+    description: Hard cap on JSON nesting depth inside one record.
+  allow_partial:
+    type: bool
+    default: false
+    description: When true, a truncated final JSONL line keeps its valid prefix, marked PARTIAL with an import gap.
+  retention_days:
+    type: int
+    default: 90
+    description: Explicit local retention for owned records. Deletion only ever targets owned record ids.

@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hermes-run-debugger"
+version = "0.1.0"
+description = "Local-first evidence debugger for failed, stalled or expensive agent runs."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+authors = [{ name = "Sahil Saghir" }]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
+]
+
+# Runtime dependencies are deliberately EMPTY. The domain core and the v1
+# surfaces are stdlib-only, so nothing can go missing from a managed runtime
+# rebuild. `plugin.yaml` also declares no python_dependencies: when a
+# pyproject.toml sits beside plugin.yaml, [project].dependencies wins, and an
+# empty list there would silently override a populated manifest field.
+dependencies = []
+
+# Ranges, never `==`: Hermes admits a plugin by resolving core's pins together
+# with this plugin's dependencies, so an exact pin here can refuse admission as
+# soon as core bumps that package. Reproducibility comes from uv.lock.
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.6",
+  "build>=1.2",
+]
+
+[project.urls]
+Homepage = "https://github.com/Sahil-SS9/hermes-agent-run-debugger"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hermes_run_debugger"]
+
+# NOTE: v1 ships as a DIRECTORY plugin (repo-root plugin.yaml + __init__.py).
+# No `hermes_agent.plugins` entry point is declared, because the plan requires
+# ONE distribution path for v1 rather than two competing runtime registrations.
+# The wheel builds for library use and for a later, separately gated
+# entry-point distribution lane.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+  "slow_collection: packaging guard that shells out to a nested pytest run",
+]
+filterwarnings = ["error::DeprecationWarning:hermes_run_debugger.*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RUF"]
