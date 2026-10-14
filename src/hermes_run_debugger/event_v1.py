@@ -99,6 +99,11 @@ _EVENT_FIELDS = frozenset({
     "kind", "event_id", "run_id", "attempt_id", "span_id", "causal_parents", "source_sequence",
     "wall_time", "monotonic_ms", "clock", "event_kind", "reported_status", "reported_error",
     "usage", "evidence_ref", "delivered_via", "semantic_provenance", "gaps", "contradictions",
+    # ``name`` is the *reported* subject of the event (tool name, model name) and is
+    # bounded/control-character free. ``arguments_ref`` is an opaque reference to
+    # tool arguments: the arguments themselves are never persisted by default, so
+    # this is a ref, not a payload.
+    "name", "arguments_ref",
 })
 _CLOCK_FIELDS = frozenset({"source", "quality", "drift_ms"})
 _USAGE_FIELDS = frozenset({
@@ -177,6 +182,10 @@ class Event:
     delivered_via: str = "import"
     gaps: tuple[str, ...] = ()
     contradictions: tuple[str, ...] = ()
+    #: Reported subject (tool/model name), bounded and control-free. Optional.
+    name: str | None = None
+    #: Opaque reference to tool arguments. Never the arguments themselves.
+    arguments_ref: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -198,6 +207,8 @@ class Event:
             "semantic_provenance": self.semantic_provenance,
             "gaps": list(self.gaps),
             "contradictions": list(self.contradictions),
+            "name": self.name,
+            "arguments_ref": self.arguments_ref,
         }
 
 
@@ -798,6 +809,16 @@ def _parse_event(
     parents = _check_str_list(record, "causal_parents", where, issues, ids=True)
     gaps = _check_str_list(record, "gaps", where, issues)
     contradictions = _check_str_list(record, "contradictions", where, issues)
+    name = _opt_str(record.get("name"))
+    if name is not None and (len(name) > 128 or any(ord(char) < 32 or ord(char) == 127 for char in name)):
+        issues.append(f"{where}.name: must be a bounded, control-character-free string")
+        name = None
+    arguments_ref = _opt_str(record.get("arguments_ref"))
+    if arguments_ref is not None and not is_valid_id(arguments_ref):
+        issues.append(
+            f"{where}.arguments_ref: must be an opaque reference token, not a payload"
+        )
+        arguments_ref = None
     error = record.get("reported_error")
     if error is not None and not isinstance(error, str):
         issues.append(f"{where}.reported_error: must be a string or null")
@@ -827,4 +848,6 @@ def _parse_event(
         delivered_via=str(delivered),
         gaps=tuple(gaps),
         contradictions=tuple(contradictions),
+        name=name,
+        arguments_ref=arguments_ref,
     )
