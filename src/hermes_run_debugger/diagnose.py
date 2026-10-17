@@ -622,10 +622,24 @@ def _later_run_activity(events: Sequence[Event], failed: Event) -> bool:
     return False
 
 
+def _observed_failure(diagnosis: Diagnosis) -> bool:
+    """True when the imported evidence actually reports a failure or an interruption.
+
+    The retention note explains why a *mechanism* cannot be named, so it only makes sense
+    when there is something whose mechanism is in question.
+    """
+    return any(
+        str(item.get("kind", "")).startswith(("failure:", "interrupted:"))
+        for item in diagnosis.observed
+    )
+
+
 def _collect_missing_evidence(diagnosis: Diagnosis, timeline: Timeline) -> None:
-    if timeline.text_dropped_by_policy:
+    if timeline.text_dropped_by_policy and _observed_failure(diagnosis):
         # Say it plainly: the reason no mechanism is offered is the retention policy, not a
-        # lack of care. Silence here would look like an unexplained gap.
+        # lack of care. Silence here would look like an unexplained gap. Gated on an observed
+        # failure: on a run that recorded none there is no mechanism to name, and the note
+        # would read as though one had been withheld by policy.
         diagnosis.missing_evidence.append(
             "error and tool-result text was not retained under the active retention policy "
             "(metadata-only), so the mechanism behind a failure cannot be named from this "
