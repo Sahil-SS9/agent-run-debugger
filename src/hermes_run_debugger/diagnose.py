@@ -46,7 +46,7 @@ _USAGE_ANOMALY_TOKENS = 100_000
 
 RULES: tuple[tuple[str, str], ...] = (
     ("R001", "repeated provider errors consistent with retry exhaustion"),
-    ("R002", "terminal tool failure with no later success on the same step"),
+    ("R002", "unrecovered tool operation with no later success of the same operation"),
     ("R003", "repeated identical operations consistent with a loop"),
     ("R004", "wrapper success and child failure describe different scopes"),
     ("R005", "evidence gaps limit what can be concluded"),
@@ -341,32 +341,71 @@ def _hypothesise(diagnosis: Diagnosis, events: Sequence[Event], timeline: Timeli
     # A failed tool *result* counts exactly like a failed tool start: the source
     # recorded a tool step that reported failure.
     failed_tools = [event for event in tool_events if event.reported_status == "failed"]
-    if failed_tools:
-        terminal = [event for event in failed_tools if not _later_success(tool_events, event)]
-        confidence = "high" if len(terminal) >= 2 else "medium"
+    # An operation is unrecovered only when the source records no later success of that SAME
+    # operation. Recovery is never inferred from unrelated later activity, and an unrelated
+    # later success never licenses a claim that the run stopped here.
+    unrecovered = [event for event in failed_tools if not _later_success(tool_events, event)]
+    if unrecovered:
+        continued = any(_later_run_activity(events, event) for event in unrecovered)
+        reported_outcomes = {str(attempt.get("outcome")) for attempt in timeline.attempts}
+        # Step-scoped, so the ceiling is medium. A blocking gap weakens it further.
+        statement = (
+            "this evidence is consistent with an unrecovered tool failure: "
+            f"{len(unrecovered)} tool call(s) report failure with no recorded later success of "
+            "the same operation"
+            + (
+                f" ({', '.join(event.name for event in unrecovered if event.name)})"
+                if any(event.name for event in unrecovered) else ""
+            )
+        )
+        if continued:
+            statement += (
+                "; the source records later successful activity after that failure, so the run "
+                "continued past it and the failed operation is unrecovered"
+            )
+        else:
+            statement += "; the source records no later successful activity after that failure"
+        if "failed" in reported_outcomes:
+            statement += (
+                "; the attempt outcome is reported failed, which is the source's own terminal "
+                "report, not a terminal event this build observed"
+            )
+        elif "interrupted" in reported_outcomes:
+            statement += (
+                "; the attempt outcome is reported interrupted, which is another reported value, "
+                "not an observed terminal event"
+            )
+        elif "completed" in reported_outcomes:
+            statement += (
+                "; the attempt outcome is reported completed, which records a finished run and "
+                "not a passed task"
+            )
+        else:
+            statement += (
+                "; the run's terminal outcome is not recorded in this evidence, so whether the run "
+                "ended at this step is unknown"
+            )
+        recovered = len(failed_tools) - len(unrecovered)
+        if recovered:
+            statement += (
+                f"; {recovered} further failed operation(s) have a recorded later success of the "
+                "same operation and are not counted here"
+            )
         diagnosis.hypotheses.append(Hypothesis(
             rule_id="R002",
-            statement=(
-                "the run is consistent with a terminal tool failure: "
-                f"{len(terminal)} tool call(s) report failure"
-                + (
-                    f" ({', '.join(event.name for event in terminal if event.name)})"
-                    if any(event.name for event in terminal) else ""
-                )
-                + " with no later successful step on the same attempt"
-            ),
-            confidence=confidence,
-            evidence_refs=tuple(event.event_id for event in terminal),
+            statement=statement,
+            confidence="low" if _blocking_gap(timeline) else "medium",
+            evidence_refs=tuple(event.event_id for event in unrecovered),
             alternatives=(
-                "the failure was tolerated by the agent and the run continued on another path",
+                "the failed operation was retried or handled in a way this log does not record",
                 "the tool result text describes a partial success the status field does not capture",
                 "the failing step is downstream of an earlier, unrecorded failure",
             ),
             falsifiers=(
-                "re-run the same tool with the recorded argument reference manually, outside this "
-                "plugin, and compare the outcome",
-                "read the raw source lines for the failing events and check whether a later retry of "
-                "the same step succeeded",
+                "read the referenced source lines for the failing events and check whether a later "
+                "attempt of the same operation succeeded",
+                "obtain the source's own terminal record for this run and compare it with the "
+                "reported attempt outcome",
             ),
         ))
 
@@ -552,13 +591,33 @@ def _hypothesise(diagnosis: Diagnosis, events: Sequence[Event], timeline: Timeli
 
 
 def _later_success(events: Sequence[Event], failed: Event) -> bool:
-    """True when the same step succeeded later in the same attempt."""
+    """True when the SAME operation succeeded later (same tool name and span).
+
+    This is the only shape that counts as recovery of the failed operation. It says
+    nothing about the run as a whole: a matching success elsewhere is not a retry, and
+    the absence of one is not evidence that the run terminated at this step.
+    """
     for event in events:
         if event.source_sequence <= failed.source_sequence:
             continue
         if event.reported_status == "ok" and (
             event.span_id == failed.span_id and event.name == failed.name
         ):
+            return True
+    return False
+
+
+def _later_run_activity(events: Sequence[Event], failed: Event) -> bool:
+    """True when the source records ANY later successful event after this failure.
+
+    This is activity, never recovery. It exists so a step-scoped failure statement cannot
+    imply that the whole run stopped: an unrelated later success does not repair the failed
+    operation, but it does prove the run carried on past it.
+    """
+    for event in events:
+        if event.source_sequence <= failed.source_sequence:
+            continue
+        if event.reported_status == "ok":
             return True
     return False
 
