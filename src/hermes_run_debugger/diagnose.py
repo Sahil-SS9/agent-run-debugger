@@ -159,17 +159,21 @@ _LIMITATIONS = (
     "leaves the outcome unknown.",
 )
 
+_NEXT_STEP_FAILING_EVIDENCE = (
+    "read-only: inspect the referenced source lines for the failing events and confirm the "
+    "reported status against the raw text; nothing is executed"
+)
+
 _NEXT_STEPS = (
     "read-only: re-run `timeline` with a wider `--max-events` and compare the gap list against "
     "the selected source; no execution is triggered here",
-    "read-only: inspect the referenced source lines for the failing events and confirm the "
-    "reported status against the raw text; nothing is executed",
+    _NEXT_STEP_FAILING_EVIDENCE,
     "read-only: for a retry chain, export the run and compare attempt order; no execution",
 )
 
-#: The one step above that names "the failing events". On a run that recorded none it reads as
-#: though a failure existed, so it is gated on an observed failure or interruption.
-_NEXT_STEPS_FAILURE_ONLY = frozenset({_NEXT_STEPS[1]})
+#: Names "the failing events", so it is only offered when one was actually observed; on a clean
+#: run it reads as though a failure existed.
+_NEXT_STEPS_FAILURE_ONLY = frozenset({_NEXT_STEP_FAILING_EVIDENCE})
 
 
 def diagnose(timeline: Timeline, *, cost: Mapping[str, Any] | None = None) -> Diagnosis:
