@@ -347,7 +347,10 @@ def _hypothesise(diagnosis: Diagnosis, events: Sequence[Event], timeline: Timeli
     unrecovered = [event for event in failed_tools if not _later_success(tool_events, event)]
     if unrecovered:
         continued = any(_later_run_activity(events, event) for event in unrecovered)
-        reported_outcomes = {str(attempt.get("outcome")) for attempt in timeline.attempts}
+        # A run holds one attempt per try: retry chains and subagent branches are separate
+        # attempts. Quoting an outcome from an attempt that did not record these failures
+        # describes evidence the source does not have, so only the owning attempts count.
+        own_outcomes = _own_attempt_outcomes(timeline, unrecovered)
         # Step-scoped, so the ceiling is medium. A blocking gap weakens it further.
         statement = (
             "this evidence is consistent with an unrecovered tool failure: "
@@ -365,20 +368,25 @@ def _hypothesise(diagnosis: Diagnosis, events: Sequence[Event], timeline: Timeli
             )
         else:
             statement += "; the source records no later successful activity after that failure"
-        if "failed" in reported_outcomes:
+        if own_outcomes == {"failed"}:
             statement += (
                 "; the attempt outcome is reported failed, which is the source's own terminal "
                 "report, not a terminal event this build observed"
             )
-        elif "interrupted" in reported_outcomes:
+        elif own_outcomes == {"interrupted"}:
             statement += (
                 "; the attempt outcome is reported interrupted, which is another reported value, "
                 "not an observed terminal event"
             )
-        elif "completed" in reported_outcomes:
+        elif own_outcomes == {"completed"}:
             statement += (
                 "; the attempt outcome is reported completed, which records a finished run and "
                 "not a passed task"
+            )
+        elif len(own_outcomes) > 1:
+            statement += (
+                "; the affected operations sit in attempts whose reported outcomes differ "
+                f"({', '.join(sorted(own_outcomes))}), so no single terminal outcome is quoted here"
             )
         else:
             statement += (
@@ -591,17 +599,21 @@ def _hypothesise(diagnosis: Diagnosis, events: Sequence[Event], timeline: Timeli
 
 
 def _later_success(events: Sequence[Event], failed: Event) -> bool:
-    """True when the SAME operation succeeded later (same tool name and span).
+    """True when the SAME operation succeeded later (same attempt, tool name and span).
 
     This is the only shape that counts as recovery of the failed operation. It says
     nothing about the run as a whole: a matching success elsewhere is not a retry, and
-    the absence of one is not evidence that the run terminated at this step.
+    the absence of one is not evidence that the run terminated at this step. The attempt
+    is part of the identity on purpose: a retry chain and a subagent branch record their
+    own tool calls, so a same-named success there is a different operation, not this one.
     """
     for event in events:
         if event.source_sequence <= failed.source_sequence:
             continue
         if event.reported_status == "ok" and (
-            event.span_id == failed.span_id and event.name == failed.name
+            event.attempt_id == failed.attempt_id
+            and event.span_id == failed.span_id
+            and event.name == failed.name
         ):
             return True
     return False
@@ -632,6 +644,21 @@ def _observed_failure(diagnosis: Diagnosis) -> bool:
         str(item.get("kind", "")).startswith(("failure:", "interrupted:"))
         for item in diagnosis.observed
     )
+
+
+def _own_attempt_outcomes(timeline: Timeline, events: Sequence[Event]) -> set[str]:
+    """Reported outcomes of the attempts that actually recorded these events.
+
+    A run can carry several attempts: every retry in a chain and every subagent branch is
+    its own attempt with its own reported outcome. Quoting an outcome belonging to an
+    attempt that did not record the failure describes evidence the source does not have,
+    which is the same scope error as quoting a run-level outcome for a step.
+    """
+    by_id = {
+        str(attempt.get("attempt_id")): str(attempt.get("outcome") or "unknown")
+        for attempt in timeline.attempts
+    }
+    return {by_id.get(str(event.attempt_id), "unknown") for event in events}
 
 
 def _collect_missing_evidence(diagnosis: Diagnosis, timeline: Timeline) -> None:
