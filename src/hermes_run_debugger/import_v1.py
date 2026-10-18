@@ -45,7 +45,7 @@ __all__ = [
     "limits_from_settings",
 ]
 
-SUPPORTED_FORMATS = ("v1", "claude")
+SUPPORTED_FORMATS = ("v1", "claude", "hermes")
 
 ARCHIVE_SUFFIXES = (
     ".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz", ".gz", ".bz2",
@@ -161,7 +161,7 @@ def guard_source(path: Path) -> None:
 
 
 def detect_format(path: str | Path, explicit: str | None = None) -> str:
-    """Return ``"v1"`` or ``"claude"``; refuse anything unrecognised."""
+    """Return the source format (``v1``, ``claude`` or ``hermes``); refuse anything unrecognised."""
     p = Path(path)
     guard_source(p)
     if explicit:
@@ -179,22 +179,40 @@ def detect_format(path: str | Path, explicit: str | None = None) -> str:
     if isinstance(head, Mapping):
         if head.get("schema") == SCHEMA_ID or head.get("kind") == "trace":
             return "v1"
+        # A Hermes session export is a session envelope: an id, a model and a
+        # ``messages`` array. Checked before the Claude shape because both carry a
+        # ``type`` key, and this one is the stronger signature.
+        if isinstance(head.get("messages"), list) and isinstance(head.get("id"), str):
+            return "hermes"
         record_type = head.get("type")
         if record_type in {"assistant", "user", "system", "summary"}:
             return "claude"
     raise ImportRefused("format", [_UNKNOWN_REFUSAL.format(path=p)])
 
 
-def _first_records(path: Path, *, limit: int) -> list[Any]:
-    """Best-effort peek at the first records. Bounded, and never raises on content."""
+def _first_records(
+    path: Path,
+    *,
+    limit: int,
+    max_line_bytes: int = 8 * 1024 * 1024,
+    max_bytes: int = 512 * 1024,
+) -> list[Any]:
+    """Best-effort peek at the first records. Bounded, and never raises on content.
+
+    A record is read whole even when it is larger than the total sample budget: a Hermes
+    session export is one very large JSON line per session, so a budget that stopped
+    before the first line was parsed would report a valid export as empty. One record
+    over ``max_line_bytes`` (the same bound the scan applies) ends the peek instead,
+    so the read stays bounded.
+    """
     records: list[Any] = []
+    total = 0
     try:
         with path.open("rb") as handle:
-            read = 0
             for raw in handle:
-                read += len(raw)
-                if read > 512 * 1024:
+                if len(raw) > max_line_bytes:
                     break
+                total += len(raw)
                 text = raw.decode("utf-8", errors="replace").strip()
                 if not text:
                     continue
@@ -202,7 +220,7 @@ def _first_records(path: Path, *, limit: int) -> list[Any]:
                     records.append(json.loads(text))
                 except ValueError:
                     records.append(text)
-                if len(records) >= limit:
+                if len(records) >= limit or total >= max_bytes:
                     break
     except OSError as exc:
         raise ImportRefused("unreadable", [f"cannot read {path}: {exc}"]) from exc
@@ -227,6 +245,12 @@ def import_trace(
         from .import_claude import import_claude_trace
 
         return import_claude_trace(
+            [p], limits=limits, allow_partial=allow_partial, retention_mode=retention_mode
+        )
+    if resolved == "hermes":
+        from .import_hermes import import_hermes_trace
+
+        return import_hermes_trace(
             [p], limits=limits, allow_partial=allow_partial, retention_mode=retention_mode
         )
 

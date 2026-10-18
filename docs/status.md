@@ -12,6 +12,7 @@ Pinned target host: `NousResearch/hermes-agent` @ `0e427d788d253630d38a3a51cd768
 |---|---|---|
 | Offline import: Trace v1 | CLI `import`, `/rundebug import`, `rundebug_import` | implemented |
 | Offline import: Claude JSONL transcripts | same | implemented |
+| Offline import: Hermes session export (`--format jsonl`) | same | implemented |
 | Timeline (partial order, gaps, ambiguity) | CLI `timeline`, `/rundebug timeline`, `rundebug_timeline` | implemented |
 | Diagnosis (observed facts, ranked hypotheses with alternatives and falsifiers) | CLI `explain`, `/rundebug explain`, `rundebug_explain` | implemented |
 | Inert replay (executes nothing) | CLI `replay`, `/rundebug replay`, `rundebug_replay` | implemented |
@@ -20,10 +21,17 @@ Pinned target host: `NousResearch/hermes-agent` @ `0e427d788d253630d38a3a51cd768
 | Local store (idempotent import, revisions, migrations, recovery, retention) | internal | implemented |
 | Redaction (two stages, value-checked identifiers, full-payload guard) | internal | implemented |
 
-**Not implemented: a native Hermes-log importer.** `SUPPORTED_FORMATS` is
-`("v1", "claude")`, so a selected Hermes run must reach this build through an approved
-export/conversion step first. A native plugin wrapper does not by itself make native
-traces consumable, and no converter ships in this repository.
+**Hermes runs import natively.** `SUPPORTED_FORMATS` is `("v1", "claude", "hermes")`. The
+`hermes` lane reads `hermes sessions export --format jsonl` — the session envelope the host
+already produces — and maps it onto `event-v1`. Failure status comes only from an explicit
+signal in the source (a non-zero `exit_code` or a truthy `error`); a tool result carrying
+neither stays `unknown` rather than being read as success. The host's `--format trace` export
+also imports through the `claude` lane, but it drops `is_error` on every tool result, so it
+cannot name a failure and is not the recommended path.
+
+What is still **not** implemented is reading the **live session database**: a selected run must
+reach this build as an exported file. That remains the separately gated `live_read_enabled`
+lane below, not a gap in the importer.
 
 ## Not implemented — refused, never silently ignored
 
@@ -44,7 +52,7 @@ mapping is explicit, so a lane cannot be switched on without its refusal firing.
 |---|---|---|
 | `tests/unit` | 6 files | schema, clock/cost, report, timeline, diagnosis, packaging guards |
 | `tests/adversarial` | 4 files | privacy (incl. credential-shaped id/ref refusals), stream inputs, archives, provenance |
-| `tests/integration` | 8 files | Claude adapter, store, replay, parallel/retry, end-to-end, plus the three R002 scoping files: failure scope, attempt scope, operation identity |
+| `tests/integration` | 9 files | Claude adapter, Hermes adapter, store, replay, parallel/retry, end-to-end, plus the three R002 scoping files: failure scope, attempt scope, operation identity |
 | `tests/platform` | 1 file | **Linux surface/claim-honesty only** — asserts which lanes are implemented, that enabling a deferred lane refuses by name, and that no non-Linux support is implied. It is **not** native Windows/macOS verification. |
 | `tests/host` | 1 file | install-alone against the pinned target host: data-driven no-mixed-tree guard, a negative control for that guard, an interpreter-identity record, and a real tool round-trip through the host registry. Fails BLOCKED (never green, never silently skipped) when host prerequisites are missing. |
 

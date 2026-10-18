@@ -15,7 +15,7 @@ A run failed, stalled, looped, or cost more than expected, and the question is
 
 1. **Select a trace deliberately.** One file (or a set of files) you choose. The
    plugin never scans `~/.claude`, a session database or your home directory.
-   `hermes run-debug import --file <path> [--format v1|claude]`.
+   `hermes run-debug import --file <path> [--format v1|claude|hermes]`.
 2. **Read the timeline**, not just the error: `/rundebug timeline <run-id>`. Check
    the *gaps* section first — a missing parent or a truncated tail limits every
    conclusion below it.

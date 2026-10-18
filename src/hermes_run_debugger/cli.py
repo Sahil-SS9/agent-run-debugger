@@ -46,7 +46,7 @@ EXPORT_REFUSAL = (
 )
 
 _USAGE = (
-    "usage: /rundebug import <file> [--format v1|claude] | timeline <run-id> | explain <run-id> | "
+    "usage: /rundebug import <file> [--format v1|claude|hermes] | timeline <run-id> | explain <run-id> | "
     "replay <run-id> | status"
 )
 
@@ -122,7 +122,17 @@ class Services:
     ) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
 
-        if fmt == "claude" or (fmt is None and len(paths) > 1):
+        if fmt == "hermes":
+            from .import_hermes import import_hermes_trace
+
+            combined = import_hermes_trace(
+                paths,
+                limits=self.settings.limits(),
+                allow_partial=partial,
+                retention_mode=self.settings.retention_mode,
+            )
+            imported_list = [combined]
+        elif fmt == "claude" or (fmt is None and len(paths) > 1):
             from .import_claude import import_claude_trace
 
             combined = import_claude_trace(

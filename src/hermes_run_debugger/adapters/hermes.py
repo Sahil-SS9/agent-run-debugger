@@ -34,6 +34,7 @@ from ..cli import (
     tool_status,
     tool_timeline,
 )
+from ..import_v1 import SUPPORTED_FORMATS
 from ..settings import Settings
 
 __all__ = ["PLUGIN_ID", "TOOL_NAMES", "build_services", "register"]
@@ -82,8 +83,8 @@ _IMPORT_SCHEMA = {
             },
             "format": {
                 "type": "string",
-                "enum": ["v1", "claude"],
-                "description": "Source format. Omit to auto-detect between the two supported shapes.",
+                "enum": list(SUPPORTED_FORMATS),
+                "description": "Source format. Omit to auto-detect the supported shapes.",
             },
             "allow_partial": {
                 "type": "boolean",
@@ -209,7 +210,7 @@ def _setup_cli_command(parser: Any) -> None:
     sub = parser.add_subparsers(dest="rundebug_command")
     import_cmd = sub.add_parser("import", help="Import explicitly selected trace files.")
     import_cmd.add_argument("--file", action="append", required=True, help="Path to a selected trace file.")
-    import_cmd.add_argument("--format", choices=["v1", "claude"], default=None)
+    import_cmd.add_argument("--format", choices=list(SUPPORTED_FORMATS), default=None)
     import_cmd.add_argument("--allow-partial", action="store_true")
     for name, help_text in (
         ("timeline", "Show the recorded timeline."),

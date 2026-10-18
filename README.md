@@ -37,17 +37,28 @@ no privileged capability and reads no environment variables, so it also runs wit
 absent — verified by driving the whole journey (import → timeline → explain → replay → export →
 status) with no host package on `sys.path` and no `HERMES_HOME`.
 
-Two import formats ship today:
+Three import formats ship:
 
 | Format | What it takes |
 |---|---|
+| `hermes` | `hermes sessions export --format jsonl` — the host's own session envelope, no conversion step |
 | `v1` | the harness-neutral trace in `schemas/trace-v1.json` — any harness that can emit it is supported with no code change |
 | `claude` | Claude Code JSONL session transcripts, via a tested adapter |
 
-A native Hermes-log importer is **not** in v1: a selected Hermes run reaches this build through
-an approved export/conversion step first, and no converter ships here. Adding a harness means
-adding one adapter that maps its records onto `event-v1`; the store, timeline, diagnosis, replay
-and report layers do not change.
+```sh
+hermes sessions export --format jsonl --session-id <id> ./run.jsonl
+hermes run-debug import --file ./run.jsonl --format hermes
+```
+
+Status comes only from an explicit signal in the source: a non-zero `exit_code` or a truthy
+`error` means failed, a zero `exit_code` means ok, and a result carrying neither stays
+`unknown` rather than being read as success. The host's `--format trace` export also imports
+through the `claude` lane, but it drops the error flag on every tool result, so it cannot name a
+failure — use `jsonl`.
+
+Adding another harness means adding one adapter that maps its records onto `event-v1`; the
+store, timeline, diagnosis, replay and report layers do not change. Reading a live session
+database is a separate, separately gated lane (`live_read_enabled`), not part of import.
 
 ## Surfaces
 
@@ -75,8 +86,9 @@ because inert report viewing does not grant sharing permission.
 ## Status
 
 This is the v1 offline debugger: harness-neutral `event-v1` import, a tested
-Claude JSONL adapter, deterministic timeline/replay/diagnosis, safe local
-storage, CLI/slash/tool surfaces and a private report. The native capture lane,
+Claude JSONL adapter, a native Hermes session-export importer, deterministic
+timeline/replay/diagnosis, safe local storage, CLI/slash/tool surfaces and a
+private report. The native capture lane,
 selected-session live reads, model narration and sandboxed experiments are
 **not** in v1 — see `docs/status.md` for exactly what is implemented, what is
 refused, and which Phase 0 gates each deferred lane still needs.
@@ -87,7 +99,7 @@ refused, and which Phase 0 gates each deferred lane still needs.
 plugin.yaml, __init__.py          # directory-plugin manifest + entry point
 src/hermes_run_debugger/          # host-neutral domain core
   event_v1.py jsonio.py identity.py redact.py store.py migrations.py
-  import_v1.py import_claude.py timeline.py replay.py diagnose.py report.py
+  import_v1.py import_claude.py import_hermes.py timeline.py replay.py diagnose.py report.py
   settings.py cli.py
   adapters/hermes.py              # the only module that touches the host
 schemas/                          # trace-v1 / diagnosis-v1 / report-v1
