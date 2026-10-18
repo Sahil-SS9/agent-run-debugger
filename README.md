@@ -29,6 +29,26 @@ hermes run-debug status
   selected. Capture, live session reads, model narration and real re-execution
   are separate opt-ins, each with its own gate.
 
+## Harness support
+
+The core is host-neutral: no module under `src/hermes_run_debugger/` imports the host, and
+`adapters/hermes.py` is the only file that does. The plugin registers no hooks, no middleware,
+no privileged capability and reads no environment variables, so it also runs with the host
+absent — verified by driving the whole journey (import → timeline → explain → replay → export →
+status) with no host package on `sys.path` and no `HERMES_HOME`.
+
+Two import formats ship today:
+
+| Format | What it takes |
+|---|---|
+| `v1` | the harness-neutral trace in `schemas/trace-v1.json` — any harness that can emit it is supported with no code change |
+| `claude` | Claude Code JSONL session transcripts, via a tested adapter |
+
+A native Hermes-log importer is **not** in v1: a selected Hermes run reaches this build through
+an approved export/conversion step first, and no converter ships here. Adding a harness means
+adding one adapter that maps its records onto `event-v1`; the store, timeline, diagnosis, replay
+and report layers do not change.
+
 ## Surfaces
 
 | Surface | Route |
@@ -71,7 +91,7 @@ src/hermes_run_debugger/          # host-neutral domain core
   settings.py cli.py
   adapters/hermes.py              # the only module that touches the host
 schemas/                          # trace-v1 / diagnosis-v1 / report-v1
-tests/{unit,adversarial,integration,host}/
+tests/{unit,adversarial,integration,platform,host}/
 docs/                             # compatibility, privacy, threat model, provenance, status
 ```
 

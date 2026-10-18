@@ -167,6 +167,10 @@ _NEXT_STEPS = (
     "read-only: for a retry chain, export the run and compare attempt order; no execution",
 )
 
+#: The one step above that names "the failing events". On a run that recorded none it reads as
+#: though a failure existed, so it is gated on an observed failure or interruption.
+_NEXT_STEPS_FAILURE_ONLY = frozenset({_NEXT_STEPS[1]})
+
 
 def diagnose(timeline: Timeline, *, cost: Mapping[str, Any] | None = None) -> Diagnosis:
     """Produce a Diagnosis v1 view of a built timeline."""
@@ -177,11 +181,20 @@ def diagnose(timeline: Timeline, *, cost: Mapping[str, Any] | None = None) -> Di
     diagnosis = Diagnosis(
         run_id=timeline.run_id,
         limitations=list(_LIMITATIONS),
-        next_diagnostics=list(_NEXT_STEPS),
         cost=dict(cost) if cost is not None else summarise_cost(events),
     )
 
     _observe(diagnosis, events, timeline)
+
+    # A next check that names "the failing events" only makes sense when the evidence reports
+    # one. The failure-independent checks stay on every run.
+    observed_failure = _observed_failure(diagnosis)
+    diagnosis.next_diagnostics = [
+        step
+        for step in _NEXT_STEPS
+        if step not in _NEXT_STEPS_FAILURE_ONLY or observed_failure
+    ]
+
     _hypothesise(diagnosis, events, timeline)
     _collect_missing_evidence(diagnosis, timeline)
 
@@ -598,23 +611,39 @@ def _hypothesise(diagnosis: Diagnosis, events: Sequence[Event], timeline: Timeli
         ))
 
 
+def _same_operation(event: Event, failed: Event) -> bool:
+    """True when ``event`` records the same operation as ``failed``.
+
+    The attempt is part of the identity: a retry chain and a subagent branch record their
+    own tool calls, so a same-named success there is a different operation.
+
+    Where the source gives an operation a span, the span is that identity and a later
+    success of the same span is the same operation. Where it does not, the tool name is
+    all that is left — and a name is not an identity: two ``Read`` calls are different
+    operations. In that case the later event must record a causal link to the failed one
+    before it can count as recovery, because a name match alone would silently erase a
+    reported failure.
+    """
+    if event.attempt_id != failed.attempt_id:
+        return False
+    if event.span_id != failed.span_id or event.name != failed.name:
+        return False
+    if failed.span_id is not None:
+        return True
+    return failed.event_id in event.causal_parents
+
+
 def _later_success(events: Sequence[Event], failed: Event) -> bool:
-    """True when the SAME operation succeeded later (same attempt, tool name and span).
+    """True when the SAME operation succeeded later in the same attempt.
 
     This is the only shape that counts as recovery of the failed operation. It says
     nothing about the run as a whole: a matching success elsewhere is not a retry, and
-    the absence of one is not evidence that the run terminated at this step. The attempt
-    is part of the identity on purpose: a retry chain and a subagent branch record their
-    own tool calls, so a same-named success there is a different operation, not this one.
+    the absence of one is not evidence that the run terminated at this step.
     """
     for event in events:
         if event.source_sequence <= failed.source_sequence:
             continue
-        if event.reported_status == "ok" and (
-            event.attempt_id == failed.attempt_id
-            and event.span_id == failed.span_id
-            and event.name == failed.name
-        ):
+        if event.reported_status == "ok" and _same_operation(event, failed):
             return True
     return False
 

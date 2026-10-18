@@ -2,6 +2,8 @@
 
 Build: v1 offline debugger. Author: KENSEI. Date: 2026-10-14 (revised after the
 independent KENSEI acceptance review of `e7abc33` — see "Corrections" at the end).
+Revised 2026-10-18: R002 scoping corrections (operation → attempt → operation identity);
+no behaviour change on the frozen DT19 cases.
 Pinned target host: `NousResearch/hermes-agent` @ `0e427d788d253630d38a3a51cd76849e73cd6925`.
 
 ## Implemented and tested
@@ -42,7 +44,7 @@ mapping is explicit, so a lane cannot be switched on without its refusal firing.
 |---|---|---|
 | `tests/unit` | 6 files | schema, clock/cost, report, timeline, diagnosis, packaging guards |
 | `tests/adversarial` | 4 files | privacy (incl. credential-shaped id/ref refusals), stream inputs, archives, provenance |
-| `tests/integration` | 5 files | Claude adapter, store, replay, parallel/retry, end-to-end |
+| `tests/integration` | 8 files | Claude adapter, store, replay, parallel/retry, end-to-end, plus the three R002 scoping files: failure scope, attempt scope, operation identity |
 | `tests/platform` | 1 file | **Linux surface/claim-honesty only** — asserts which lanes are implemented, that enabling a deferred lane refuses by name, and that no non-Linux support is implied. It is **not** native Windows/macOS verification. |
 | `tests/host` | 1 file | install-alone against the pinned target host: data-driven no-mixed-tree guard, a negative control for that guard, an interpreter-identity record, and a real tool round-trip through the host registry. Fails BLOCKED (never green, never silently skipped) when host prerequisites are missing. |
 
@@ -57,8 +59,16 @@ mapping is explicit, so a lane cannot be switched on without its refusal firing.
 2. **Host-lane prerequisites (review R3).** The host gate needs an interpreter carrying
    the target host's own dependencies. `scripts/host-test-env.sh` is the provisioning
    recipe, and it installs packages, so it needs your approval before it is run.
-3. **DT19 value benchmark.** Unrun: it needs 3–5 owner-labelled real runs in a supported
-   format, plus any baseline/spend/egress decision that implies.
+3. **DT19 value benchmark — run, and it does not settle usefulness.** Two rounds ran on
+   four owner-labelled real runs. Under `metadata-only` the build could not name a
+   mechanism (the text is dropped by that policy); under `redacted-summary` it names the
+   source-reported mechanism in all three failing cases. The head-to-head against an
+   ordinary reader is **not usable as evidence**: the reader's findings were written
+   after the tool's answers, so bias runs in an unknown direction. Treat the result as
+   information recoverability only. Whether it reduces a person's inspection effort is
+   **unmeasured** and needs a separate usability exercise, not another accuracy rerun.
+   Evidence: `evidence/dt19-metadata-only-pilot/` and
+   `evidence/dt19-paired-retention-follow-up/` in the handoff tree.
 4. INSTALL, DEPLOY/soak and PUBLISH remain your gates.
 
 ## Corrections after the independent review (superseded statements kept)
