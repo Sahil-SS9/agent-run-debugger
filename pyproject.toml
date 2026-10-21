@@ -34,7 +34,7 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Sahil-SS9/hermes-agent-run-debugger"
+Homepage = "https://github.com/Sahil-SS9/agent-run-debugger"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/hermes_run_debugger"]

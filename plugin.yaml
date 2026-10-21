@@ -7,7 +7,7 @@ description: >-
   replays the recorded timeline without executing anything.
 author: Sahil Saghir
 license: Apache-2.0
-homepage: https://github.com/Sahil-SS9/hermes-agent-run-debugger
+homepage: https://github.com/Sahil-SS9/agent-run-debugger
 manifest_version: 2
 kind: standalone
 
