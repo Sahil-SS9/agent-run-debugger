@@ -34,7 +34,7 @@ Agent Run Debugger turns one selected trace into an evidence trail:
 
 - **Evidence first.** Observed facts, hypotheses and missing evidence are kept separate.
 - **Inert replay.** Replay re-reads the recorded timeline. It runs no subprocess, opens no network connection and touches no live database.
-- **Local by default.** Import a trace you explicitly select. No telemetry collector and no background capture.
+- **Local by default.** Import a trace explicitly selected by you or the model through `rundebug_import`. No telemetry collector and no background capture.
 - **Host-neutral core.** The domain core does not import Hermes. A thin adapter handles the host integration.
 - **Explicit opt-ins.** Live reads, capture, model narration and real re-execution are separate lanes with their own gates.
 - **Unknown stays unknown.** Missing logs, unknown billing and unsupported signals are reported as gaps, not guessed or rounded to zero.

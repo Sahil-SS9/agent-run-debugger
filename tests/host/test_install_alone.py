@@ -264,3 +264,120 @@ def test_tool_round_trip_through_the_host_registry(monkeypatch, host_home, tmp_p
     store_file = Path(host_home) / "plugin-data" / PLUGIN_KEY / "rundebug.db"
     assert store_file.exists(), "the tool round trip must persist under the disposable home"
     assert not (tmp_path / "exports").exists(), "no route in this test writes an export"
+
+
+@pytest.fixture
+def hermes_cli(host_home, tmp_path):
+    """Run the actual host CLI in a fresh process, never the Services shortcut."""
+    os_home = tmp_path / "os-home"
+    os_home.mkdir()
+    env = {
+        "PATH": os.environ.get("PATH", os.defpath),
+        "HOME": str(os_home),
+        "HERMES_HOME": str(host_home),
+        "PYTHONPATH": HOST_SRC,
+        "TMPDIR": str(tmp_path),
+        "XDG_CONFIG_HOME": str(os_home / "config"),
+        "XDG_CACHE_HOME": str(os_home / "cache"),
+        "XDG_DATA_HOME": str(os_home / "data"),
+        "XDG_STATE_HOME": str(os_home / "state"),
+    }
+
+    def invoke(*args):
+        return subprocess.run(
+            [sys.executable, "-m", "hermes_cli.main", "run-debug", *args],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+    return invoke
+
+
+def test_cli_status_uses_registered_context(hermes_cli, host_home):
+    """The host dispatches args.func(argparse.Namespace), not a PluginContext."""
+    (host_home / "config.yaml").write_text(
+        f"plugins:\n  enabled: [{PLUGIN_KEY}]\n  entries:\n    {PLUGIN_KEY}:\n"
+        "      settings:\n        retention_days: 7\n        import_max_events: 1234\n",
+        encoding="utf-8",
+    )
+    result = hermes_cli("status")
+    assert result.returncode == 0, result.stdout + result.stderr
+    status = json.loads(result.stdout)
+    assert status["schema"] == "hermes-run-debugger/status"
+    assert status["runs"] == 0
+    assert status["limits"]["retention_days"] == 7
+    assert status["limits"]["import_max_events"] == 1234
+    assert Path(status["data_dir"]) == host_home / "plugin-data" / PLUGIN_KEY
+
+
+def test_cli_without_subcommand_prints_help(hermes_cli, host_home):
+    result = hermes_cli()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Import a selected agent trace" in result.stdout
+    assert not (host_home / "plugin-data" / PLUGIN_KEY).exists()
+
+
+def test_cli_import_analysis_and_private_export(hermes_cli, tmp_path):
+    """Every CLI subcommand works across fresh host processes, including export."""
+    source = tmp_path / "selected-session.jsonl"
+    source.write_text(
+        '\n'.join(json.dumps(record) for record in [
+            {"type": "user", "uuid": "u1", "sessionId": "cli-test",
+             "message": {"role": "user", "content": "debug this recorded run"}},
+            {"type": "assistant", "uuid": "a1", "parentUuid": "u1", "sessionId": "cli-test",
+             "message": {"role": "assistant", "content": [
+                 {"type": "tool_use", "id": "call-1", "name": "RecordedTool", "input": {}}]}},
+            {"type": "user", "uuid": "u2", "parentUuid": "a1", "sessionId": "cli-test",
+             "message": {"role": "user", "content": [
+                 {"type": "tool_result", "tool_use_id": "call-1", "is_error": True,
+                  "content": "recorded failure"}]}},
+        ]) + '\n',
+        encoding="utf-8",
+    )
+    imported = hermes_cli("import", "--file", str(source), "--format", "claude", "--allow-partial")
+    assert imported.returncode == 0, imported.stdout + imported.stderr
+    run_id = json.loads(imported.stdout)["run_id"]
+
+    for command, expected in (
+        ("timeline", "RecordedTool"),
+        ("explain", "hypothes"),
+        ("replay", "inert replay"),
+    ):
+        result = hermes_cli(command, "--run", run_id)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert expected in result.stdout, result.stdout
+
+    explained = hermes_cli("explain", "--run", run_id, "--json")
+    assert explained.returncode == 0, explained.stdout + explained.stderr
+    assert isinstance(json.loads(explained.stdout), dict)
+
+    for fmt, suffix in (("markdown", "md"), ("json", "json"), ("html", "html")):
+        out = tmp_path / "private" / f"report.{suffix}"
+        exported = hermes_cli("export", "--run", run_id, "--out", str(out), "--format", fmt)
+        assert exported.returncode == 0, exported.stdout + exported.stderr
+        assert "wrote private report" in exported.stdout
+        assert out.is_file()
+        assert out.stat().st_mode & 0o077 == 0
+        payload = out.read_text(encoding="utf-8")
+        assert "RecordedTool" in payload
+        assert run_id not in payload, "exports use opaque references, not private run ids"
+        assert str(source) not in payload
+        if fmt == "json":
+            assert json.loads(payload)["schema"] == "hermes-run-debugger/report"
+
+    status = hermes_cli("status")
+    assert status.returncode == 0, status.stdout + status.stderr
+    assert json.loads(status.stdout)["latest_runs"] == [run_id]
+
+
+def test_cli_import_refusal_preserves_exit_code_and_privacy(hermes_cli, tmp_path):
+    source = tmp_path / "invalid.jsonl"
+    private_content = "private-content-that-must-not-appear-in-errors"
+    source.write_text(private_content + '\n', encoding="utf-8")
+    result = hermes_cli("import", "--file", str(source), "--format", "v1")
+    assert result.returncode == 3, result.stdout + result.stderr
+    assert "refused" in result.stdout
+    assert private_content not in result.stdout + result.stderr

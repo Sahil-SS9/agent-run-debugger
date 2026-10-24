@@ -1,5 +1,5 @@
 name: agent-run-debugger
-version: 0.1.0
+version: 0.1.1
 description: >-
   Local-first evidence debugger for failed, stalled or expensive agent runs.
   Imports an explicitly selected trace, reconstructs an ordered timeline,

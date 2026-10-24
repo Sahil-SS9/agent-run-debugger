@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -157,7 +158,7 @@ def register(ctx: Any) -> None:
         "run-debug",
         help=_HELP,
         setup_fn=_setup_cli_command,
-        handler_fn=_handle_cli_command,
+        handler_fn=partial(_handle_cli_command, services=services),
         description="Local-first evidence debugger for agent runs (offline import; inert replay).",
     )
     ctx.register_command(
@@ -229,8 +230,8 @@ def _setup_cli_command(parser: Any) -> None:
     parser.set_defaults(rundebug_command=None)
 
 
-def _handle_cli_command(args: Any) -> int:
-    services = build_services(args)
+def _handle_cli_command(args: Any, *, services: Services) -> int:
+    # Hermes passes an argparse Namespace here; use the services bound at registration.
     command = getattr(args, "rundebug_command", None)
     if not command:
         print(_HELP)
